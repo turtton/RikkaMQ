@@ -16,7 +16,10 @@ Depends
 - tokio
 
 ```rust
+use crate::config::MQConfig;
 use crate::define::redis::mq::RedisMessageQueue;
+use crate::info::QueueInfo;
+use crate::mq::MessageQueue;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct QueueData {
