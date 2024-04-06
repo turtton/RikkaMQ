@@ -275,20 +275,16 @@ mod test {
     use crate::config::MQConfig;
     use crate::define::redis::mq::RedisMessageQueue;
     use crate::define::redis::test::{create_pool, TestData};
-    use crate::define::redis::{QueueData, RedisJobInternal};
     use crate::error::{Error, ErrorOperation};
     use crate::info::QueueInfo;
     use crate::mq::MessageQueue;
-    use deadpool_redis::{Config, CreatePoolError, Pool, Runtime};
     use rand::random;
-    use serde::{Deserialize, Serialize};
     use std::str::FromStr;
     use std::time::Duration;
     use tokio::time::sleep;
     use tracing::info;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
-    use uuid::Uuid;
 
     #[test_with::env(REDIS_URL)]
     #[tokio::test]
