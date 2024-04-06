@@ -2,7 +2,25 @@
 name = "rikka-mq"
 version = "0.1.0"
 edition = "2021"
+authors = ["turtton <top.gear7509@turtton.net>"]
+license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+thiserror = "1.0.58"
+serde = { version = "1.0.197", features = ["derive"] }
+serde_json = "1.0.115"
+destructure = "0.5.6"
+uuid = { version = "1.8.0", features = ["v4", "serde"] }
+deadpool-redis = "0.15.0"
+redis = { version = "0.25.3", features = ["tokio", "streams"] }
+tracing = "0.1.40"
+tokio = { version = "1.0.1" }
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3.18", features = ["registry", "env-filter", "fmt"] }
+tokio = { version = "1.0.1", features = ["macros"] }
+rand = "0.8.5"
+dotenvy = "0.15.7"
+test-with = { version = "*", default-features = false, features = [] }
