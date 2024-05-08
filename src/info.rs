@@ -1,47 +1,37 @@
 use destructure::Destructure;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+use std::fmt::Display;
 
 /// Information about a queued message
 ///
-/// Basically, it is recommended to use [`QueueInfo::from`]
-///
 /// ```
+/// use uuid::Uuid;
 /// use rikka_mq::info::QueueInfo;
 ///
-/// let info = QueueInfo::from("Data");
+/// let info = QueueInfo::new(Uuid::new_v4(), "Data");
 /// ```
 #[derive(Debug, Serialize, Deserialize, Destructure)]
-pub struct QueueInfo<T> {
-    id: Uuid,
-    data: T,
+pub struct QueueInfo<I, D> {
+    id: I,
+    data: D,
 }
 
-impl<T> QueueInfo<T> {
-    pub fn new(id: Uuid, data: T) -> Self {
+impl<I: Display, T> QueueInfo<I, T> {
+    pub fn new(id: I, data: T) -> Self {
         Self { id, data }
-    }
-}
-
-impl<T> From<T> for QueueInfo<T> {
-    fn from(value: T) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            data: value,
-        }
     }
 }
 
 /// Information about a failed or delayed message
 #[derive(Debug, Serialize, Deserialize, Destructure)]
-pub struct ErroredInfo<T> {
-    id: Uuid,
-    data: T,
+pub struct ErroredInfo<I, D> {
+    id: I,
+    data: D,
     stack_trace: String,
 }
 
-impl<T> ErroredInfo<T> {
-    pub fn new(id: Uuid, data: T, stack_trace: String) -> Self {
+impl<I: Display, D> ErroredInfo<I, D> {
+    pub fn new(id: I, data: D, stack_trace: String) -> Self {
         Self {
             id,
             data,

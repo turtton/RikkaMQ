@@ -7,16 +7,15 @@ use deadpool_redis::Connection;
 use redis::streams::StreamReadOptions;
 use redis::{ErrorKind, RedisError};
 use serde::{Deserialize, Serialize};
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::str::from_utf8;
 use std::time::Duration;
-use uuid::Uuid;
 
 #[derive(Debug)]
-pub(in crate::define::redis) struct QueueData<T> {
+pub(in crate::define::redis) struct QueueData<I: Display, T> {
     id: String,
     delivered_count: i64,
-    info: QueueInfo<T>,
+    info: QueueInfo<I, T>,
 }
 
 const QUEUE_FIELD: &str = "info";
@@ -86,10 +85,10 @@ impl RedisJobInternal {
         con.xgroup_create_mkstream(name, &group(name), 0).await
     }
 
-    async fn insert_waiting<T: Serialize>(
+    async fn insert_waiting<I: Display + Serialize, T: Serialize>(
         con: &mut Connection,
         name: &str,
-        info: &QueueInfo<T>,
+        info: &QueueInfo<I, T>,
     ) -> Result<(), Error> {
         // Ignore error
         let _ = Self::create_group(con, name).await;
@@ -98,11 +97,11 @@ impl RedisJobInternal {
         Ok(())
     }
 
-    async fn pop_to_process<T>(
+    async fn pop_to_process<I: Display + for<'de> Deserialize<'de>, T>(
         con: &mut Connection,
         name: &str,
         member: &str,
-    ) -> Result<Option<QueueData<T>>, Error>
+    ) -> Result<Option<QueueData<I, T>>, Error>
     where
         T: for<'de> Deserialize<'de>,
     {
@@ -149,12 +148,12 @@ impl RedisJobInternal {
         Ok(())
     }
 
-    async fn pop_pending<T>(
+    async fn pop_pending<I: Display + for<'de> Deserialize<'de>, T>(
         con: &mut Connection,
         name: &str,
         own_member: &str,
         idle_time: &Duration,
-    ) -> Result<Option<QueueData<T>>, Error>
+    ) -> Result<Option<QueueData<I, T>>, Error>
     where
         T: for<'de> Deserialize<'de>,
     {
@@ -209,7 +208,7 @@ impl RedisJobInternal {
         };
         match bulk.as_slice() {
             [Value::Data(_field), Value::Data(data)] => {
-                let info: QueueInfo<T> = serde_json::from_slice(data)?;
+                let info: QueueInfo<I, T> = serde_json::from_slice(data)?;
 
                 Ok(Some(QueueData {
                     id,
@@ -221,10 +220,10 @@ impl RedisJobInternal {
         }
     }
 
-    async fn push_delayed_info<T: Serialize>(
+    async fn push_delayed_info<I: Display + Serialize, T: Serialize>(
         con: &mut Connection,
         name: &str,
-        id: Uuid,
+        id: I,
         data: T,
         stack_trace: String,
     ) -> Result<(), Error> {
@@ -235,12 +234,20 @@ impl RedisJobInternal {
         Ok(())
     }
 
-    async fn remove_delayed_info(con: &mut Connection, name: &str, id: &Uuid) -> Result<(), Error> {
+    async fn remove_delayed_info<I: Display>(
+        con: &mut Connection,
+        name: &str,
+        id: &I,
+    ) -> Result<(), Error> {
         con.hdel(&delayed(name), &id.to_string()).await?;
         Ok(())
     }
 
-    async fn remove_failed_info(con: &mut Connection, name: &str, id: &Uuid) -> Result<(), Error> {
+    async fn remove_failed_info<I: Display>(
+        con: &mut Connection,
+        name: &str,
+        id: &I,
+    ) -> Result<(), Error> {
         con.hdel(&failed(name), &id.to_string()).await?;
         Ok(())
     }
@@ -255,17 +262,17 @@ impl RedisJobInternal {
         Ok(size)
     }
 
-    async fn push_failed_info<T: Serialize>(
+    async fn push_failed_info<I: Display + Serialize, T: Serialize>(
         con: &mut Connection,
         name: &str,
         info: String,
-        uuid: Uuid,
+        id: I,
         data: T,
     ) -> Result<(), Error> {
-        let raw_uuid = uuid.to_string();
-        let data = ErroredInfo::new(uuid, data, info);
+        let raw_id = id.to_string();
+        let data = ErroredInfo::new(id, data, info);
         let raw = serde_json::to_string(&data)?;
-        con.hset(&failed(name), &raw_uuid, &raw).await?;
+        con.hset(&failed(name), &raw_id, &raw).await?;
         Ok(())
     }
 
@@ -316,10 +323,10 @@ impl RedisJobInternal {
             .collect()
     }
 
-    async fn get_info_from_hash<T: for<'de> Deserialize<'de>>(
+    async fn get_info_from_hash<I: Display, T: for<'de> Deserialize<'de>>(
         con: &mut Connection,
         name: &str,
-        id: &Uuid,
+        id: &I,
     ) -> Result<Option<T>, Error> {
         let result: Value = con.hget(name, &id.to_string()).await?;
         match result {
@@ -376,13 +383,14 @@ mod test {
         };
         let info = QueueInfo::new(Uuid::new_v4(), data);
         RedisJobInternal::insert_waiting(&mut con, name, &info).await?;
-        let result: QueueData<TestData> = RedisJobInternal::pop_to_process(&mut con, name, member)
-            .await?
-            .unwrap();
+        let result: QueueData<Uuid, TestData> =
+            RedisJobInternal::pop_to_process(&mut con, name, member)
+                .await?
+                .unwrap();
         println!("result: {result:?}");
 
         sleep(Duration::from_secs(1)).await;
-        let pending: Option<QueueData<TestData>> =
+        let pending: Option<QueueData<Uuid, TestData>> =
             RedisJobInternal::pop_pending(&mut con, name, member, &Duration::from_millis(500))
                 .await?;
         println!("result: {pending:?}");

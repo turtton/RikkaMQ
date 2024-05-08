@@ -6,12 +6,12 @@ use crate::info::{DestructErroredInfo, DestructQueueInfo, ErroredInfo, QueueInfo
 use crate::mq::MessageQueue;
 use deadpool_redis::{Pool, PoolError};
 use serde::{Deserialize, Serialize};
+use std::fmt::Display;
 use std::marker::PhantomData;
 use std::sync::Mutex;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, error, warn};
-use uuid::Uuid;
 
 impl From<PoolError> for Error {
     fn from(error: PoolError) -> Self {
@@ -19,36 +19,41 @@ impl From<PoolError> for Error {
     }
 }
 
-pub struct RedisMessageQueue<M, T>
+pub struct RedisMessageQueue<M, I, T>
 where
     M: 'static + Clone + Sync + Send,
+    I: 'static + Clone + Serialize + for<'de> Deserialize<'de> + Display + Sync + Send,
     T: 'static + Clone + Serialize + for<'de> Deserialize<'de> + Sync + Send,
 {
     name: String,
     db: Pool,
     module: M,
     config: MQConfig,
+    id_generator: Mutex<Box<fn() -> I>>,
     worker_process: Mutex<Box<dyn ErasedIntoRoute<M, T>>>,
     _data_type: PhantomData<T>,
 }
 
-impl<M, T> RedisMessageQueue<M, T>
+impl<M, I, T> RedisMessageQueue<M, I, T>
 where
     M: 'static + Clone + Send + Sync,
+    I: 'static + Serialize + for<'de> Deserialize<'de> + Display + Clone + Sync + Send,
     T: Clone + Serialize + for<'de> Deserialize<'de> + Sync + Send,
 {
-    #[tracing::instrument(skip(db, module, block))]
+    #[tracing::instrument(skip(db, module, id_generator, block))]
     async fn listen(
         db: Pool,
         module: M,
         name: String,
         config: MQConfig,
+        id_generator: Box<fn() -> I>,
         block: Box<dyn ErasedIntoRoute<M, T>>,
     ) {
-        let member_name = format!("consumer:{}", Uuid::new_v4());
+        let member_id = id_generator();
+        let member_name = format!("consumer:{}", member_id);
         loop {
             let QueueData {
-                id,
+                id: queue_id,
                 delivered_count,
                 info,
             } = {
@@ -60,7 +65,7 @@ where
                         continue;
                     }
                 };
-                let mut result = RedisJobInternal::pop_pending::<T>(
+                let mut result = RedisJobInternal::pop_pending::<I, T>(
                     &mut con,
                     &name,
                     &member_name,
@@ -80,8 +85,9 @@ where
                     }
                 }
             };
-            debug!("Processing Id: {id}, TryCount: {delivered_count}");
-            let DestructQueueInfo { id: uuid, data }: DestructQueueInfo<T> = info.into_destruct();
+            debug!("Processing Id: {queue_id}, TryCount: {delivered_count}");
+            let DestructQueueInfo { id: info_id, data }: DestructQueueInfo<I, T> =
+                info.into_destruct();
             let result = block
                 .clone_box()
                 .convert(module.clone(), data.clone())
@@ -106,19 +112,19 @@ where
                                 "Task failed or {} time delayed: {:?}",
                                 config.max_retry, report
                             ),
-                            uuid,
+                            info_id.clone(),
                             data,
                         )
                         .await
                         {
                             error!("{report:?}");
                         }
-                        error!("Failed Id: {id}, TryCount: {delivered_count}");
+                        error!("Failed Id: {queue_id}, TryCount: {delivered_count}");
                     } else if let ErrorOperation::Delay(_) = report {
                         if let Err(report) = RedisJobInternal::push_delayed_info(
                             &mut con,
                             &name,
-                            uuid,
+                            info_id,
                             data,
                             format!("{report:?}"),
                         )
@@ -126,17 +132,17 @@ where
                         {
                             error!("{report:?}");
                         }
-                        warn!("Delayed Id: {id}, TryCount: {delivered_count}, Report: {report:?}");
+                        warn!("Delayed Id: {queue_id}, TryCount: {delivered_count}, Report: {report:?}");
                         continue;
                     }
                 } else {
-                    debug!("Done Id: {id}, TryCount: {delivered_count}");
+                    debug!("Done Id: {queue_id}, TryCount: {delivered_count}");
                 }
-                if let Err(report) = RedisJobInternal::mark_done(&mut con, &name, &id).await {
+                if let Err(report) = RedisJobInternal::mark_done(&mut con, &name, &queue_id).await {
                     error!("{report:?}");
                 } else if delivered_count > 0 {
                     if let Err(report) =
-                        RedisJobInternal::remove_delayed_info(&mut con, &name, &uuid).await
+                        RedisJobInternal::remove_delayed_info(&mut con, &name, &info_id).await
                     {
                         error!("{report:?}");
                     };
@@ -146,9 +152,10 @@ where
     }
 }
 
-impl<M, T> MessageQueue<M, T> for RedisMessageQueue<M, T>
+impl<M, I, T> MessageQueue<M, I, T> for RedisMessageQueue<M, I, T>
 where
     M: 'static + Clone + Send + Sync,
+    I: 'static + Clone + Serialize + for<'de> Deserialize<'de> + Display + Sync + Send,
     T: 'static + Clone + Serialize + for<'de> Deserialize<'de> + Sync + Send,
 {
     type DatabaseConnection = Pool;
@@ -158,6 +165,7 @@ where
         module: M,
         name: String,
         config: MQConfig,
+        id_generator: fn() -> I,
         process: H,
     ) -> Self
     where
@@ -170,6 +178,7 @@ where
             db,
             module,
             config,
+            id_generator: Mutex::new(Box::new(id_generator)),
             worker_process: Mutex::new(Box::new(container)),
             _data_type: PhantomData,
         }
@@ -188,16 +197,29 @@ where
                 Ok(guard) => guard.clone_box(),
                 Err(_) => continue,
             };
+            let id_generator = self.id_generator.lock();
+            let id_generator = match id_generator {
+                Ok(guard) => guard.clone(),
+                Err(_) => continue,
+            };
             let name = self.name.clone();
             let config = self.config.clone();
             tokio::spawn(async move {
-                RedisMessageQueue::listen(db, module, name, config, process).await;
+                RedisMessageQueue::<M, I, T>::listen(
+                    db,
+                    module,
+                    name,
+                    config,
+                    id_generator,
+                    process,
+                )
+                .await;
             });
             i += 1;
         }
     }
 
-    async fn queue(&self, info: QueueInfo<T>) -> Result<(), Error> {
+    async fn queue(&self, info: QueueInfo<I, T>) -> Result<(), Error> {
         let name = &self.name;
         let mut con = self.db.get().await?;
         RedisJobInternal::insert_waiting(&mut con, name, &info).await
@@ -215,13 +237,13 @@ where
         &self,
         size: i64,
         offset: i64,
-    ) -> Result<Vec<ErroredInfo<T>>, Error> {
+    ) -> Result<Vec<ErroredInfo<I, T>>, Error> {
         let name = delayed(&self.name);
         let mut con = self.db.get().await?;
         RedisJobInternal::get_infos_from_hash(&mut con, &name, &size, &offset).await
     }
 
-    async fn get_delayed_info(&self, id: &Uuid) -> Result<Option<ErroredInfo<T>>, Error> {
+    async fn get_delayed_info(&self, id: &I) -> Result<Option<ErroredInfo<I, T>>, Error> {
         let name = delayed(&self.name);
         let mut con = self.db.get().await?;
         RedisJobInternal::get_info_from_hash(&mut con, &name, id).await
@@ -233,13 +255,17 @@ where
         RedisJobInternal::get_hash_len(&mut con, &name).await
     }
 
-    async fn get_failed_infos(&self, size: i64, offset: i64) -> Result<Vec<ErroredInfo<T>>, Error> {
+    async fn get_failed_infos(
+        &self,
+        size: i64,
+        offset: i64,
+    ) -> Result<Vec<ErroredInfo<I, T>>, Error> {
         let mut con = self.db.get().await?;
         let name = failed(&self.name);
         RedisJobInternal::get_infos_from_hash(&mut con, &name, &size, &offset).await
     }
 
-    async fn get_failed_info(&self, id: &Uuid) -> Result<Option<ErroredInfo<T>>, Error> {
+    async fn get_failed_info(&self, id: &I) -> Result<Option<ErroredInfo<I, T>>, Error> {
         let mut con = self.db.get().await?;
         let name = failed(&self.name);
         RedisJobInternal::get_info_from_hash(&mut con, &name, id).await
@@ -251,10 +277,10 @@ where
         RedisJobInternal::get_hash_len(&mut con, &name).await
     }
 
-    async fn retry_failed(&self, id: &Uuid) -> Result<(), Error> {
+    async fn retry_failed(&self, id: &I) -> Result<(), Error> {
         let mut con = self.db.get().await?;
         let failed = failed(&self.name);
-        let failed_info: Option<ErroredInfo<T>> =
+        let failed_info: Option<ErroredInfo<I, T>> =
             RedisJobInternal::get_info_from_hash(&mut con, &failed, id).await?;
         if let Some(info) = failed_info {
             RedisJobInternal::remove_failed_info(&mut con, &self.name, id).await?;
@@ -262,7 +288,7 @@ where
                 id,
                 data,
                 stack_trace: _,
-            }: DestructErroredInfo<T> = info.into_destruct();
+            }: DestructErroredInfo<I, T> = info.into_destruct();
             let info = QueueInfo::new(id, data.clone());
             RedisJobInternal::insert_waiting(&mut con, &self.name, &info).await?;
         }
@@ -285,6 +311,7 @@ mod test {
     use tracing::info;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
+    use uuid::Uuid;
 
     #[test_with::env(REDIS_URL)]
     #[tokio::test]
@@ -298,12 +325,15 @@ mod test {
             .init();
         let pool = create_pool()?;
         let name = "test".to_string();
-        let config = MQConfig::default().max_retry(3);
+        let config = MQConfig::default()
+            .max_retry(3)
+            .retry_delay(Duration::from_secs(3));
         let mq = RedisMessageQueue::new(
             pool.clone(),
             (),
             name,
             config,
+            || Uuid::new_v4(),
             |_none, data: TestData| async move {
                 info!("data: {data:?}");
                 sleep(Duration::from_millis(20)).await;
@@ -325,7 +355,7 @@ mod test {
             let data = TestData {
                 a: format!("test:{i}"),
             };
-            let data = QueueInfo::from(data);
+            let data = QueueInfo::new(Uuid::new_v4(), data);
             // Queue
             mq.queue(data).await?;
         }
