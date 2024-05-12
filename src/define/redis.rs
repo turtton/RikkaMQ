@@ -97,6 +97,9 @@ impl RedisJobInternal {
         Ok(())
     }
 
+    /// Get waiting message and mark it as pending messages
+    ///
+    /// See https://redis.io/docs/latest/commands/xread/
     async fn pop_to_process<I: Display + for<'de> Deserialize<'de>, T>(
         con: &mut Connection,
         name: &str,
@@ -148,6 +151,9 @@ impl RedisJobInternal {
         Ok(())
     }
 
+    /// Get pending message that marked before `idle_time`
+    ///
+    /// See https://redis.io/docs/latest/commands/xpending/
     async fn pop_pending<I: Display + for<'de> Deserialize<'de>, T>(
         con: &mut Connection,
         name: &str,
@@ -220,15 +226,17 @@ impl RedisJobInternal {
         }
     }
 
+    /// Push message as delayed.
+    /// Please mark done the message after calling this function.
     async fn push_delayed_info<I: Display + Serialize, T: Serialize>(
         con: &mut Connection,
         name: &str,
         id: I,
         data: T,
-        stack_trace: String,
+        info: String,
     ) -> Result<(), Error> {
         let string_id = id.to_string();
-        let info = ErroredInfo::new(id, data, stack_trace);
+        let info = ErroredInfo::new(id, data, info);
         let raw = serde_json::to_string(&info)?;
         con.hset(&delayed(name), &string_id, &raw).await?;
         Ok(())
@@ -265,9 +273,9 @@ impl RedisJobInternal {
     async fn push_failed_info<I: Display + Serialize, T: Serialize>(
         con: &mut Connection,
         name: &str,
-        info: String,
         id: I,
         data: T,
+        info: String,
     ) -> Result<(), Error> {
         let raw_id = id.to_string();
         let data = ErroredInfo::new(id, data, info);
@@ -276,7 +284,7 @@ impl RedisJobInternal {
         Ok(())
     }
 
-    async fn get_wait_len(con: &mut Connection, name: &str) -> Result<i64, Error> {
+    async fn get_stream_len(con: &mut Connection, name: &str) -> Result<i64, Error> {
         let result: Value = con.xlen(name).await?;
         if let Value::Int(size) = result {
             Ok(size)
@@ -342,16 +350,16 @@ impl RedisJobInternal {
 
 #[cfg(test)]
 mod test {
-    use crate::define::redis::{QueueData, RedisJobInternal};
+    use crate::define::redis::{delayed, failed, QueueData, RedisJobInternal};
     use crate::error::Error;
-    use crate::info::QueueInfo;
+    use crate::info::{ErroredInfo, QueueInfo};
     use deadpool_redis::{Config, CreatePoolError, Pool, Runtime};
     use serde::{Deserialize, Serialize};
     use std::time::Duration;
     use tokio::time::sleep;
     use uuid::Uuid;
 
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub struct TestData {
         pub a: String,
     }
@@ -373,16 +381,23 @@ mod test {
 
     #[test_with::env(REDIS_URL)]
     #[tokio::test]
-    async fn test_internal() -> Result<(), Error> {
+    async fn test_positive() -> Result<(), Error> {
         let pool = create_pool()?;
         let mut con = pool.get().await?;
-        let name = "test";
-        let member = "member";
+        let name = "test_positive";
+        let member = "m_test_positive";
         let data = TestData {
             a: "testtss".to_string(),
         };
         let info = QueueInfo::new(Uuid::new_v4(), data);
+
+        let len = RedisJobInternal::get_stream_len(&mut con, name).await?;
+        assert_eq!(len, 0);
+
         RedisJobInternal::insert_waiting(&mut con, name, &info).await?;
+
+        let len = RedisJobInternal::get_stream_len(&mut con, name).await?;
+        assert_eq!(len, 1);
         let result: QueueData<Uuid, TestData> =
             RedisJobInternal::pop_to_process(&mut con, name, member)
                 .await?
@@ -395,7 +410,113 @@ mod test {
                 .await?;
         println!("result: {pending:?}");
 
+        let len = RedisJobInternal::get_stream_len(&mut con, name).await?;
+        assert_eq!(len, 1);
+
         RedisJobInternal::mark_done(&mut con, name, &result.id).await?;
+
+        let len = RedisJobInternal::get_stream_len(&mut con, name).await?;
+        assert_eq!(len, 0);
+        Ok(())
+    }
+
+    #[test_with::env(REDIS_URL)]
+    #[tokio::test]
+    async fn test_delayed() -> Result<(), Error> {
+        let pool = create_pool()?;
+        let mut con = pool.get().await?;
+        let name = "test_delayed";
+        let member = "m_test_delayed";
+        let data = TestData {
+            a: "testtss".to_string(),
+        };
+        let info = QueueInfo::new(Uuid::new_v4(), data);
+        RedisJobInternal::insert_waiting(&mut con, name, &info).await?;
+        let result: QueueData<Uuid, TestData> =
+            RedisJobInternal::pop_to_process(&mut con, name, member)
+                .await?
+                .unwrap();
+        println!("result: {result:?}");
+        let info = result.info.into_destruct();
+        RedisJobInternal::push_delayed_info(
+            &mut con,
+            name,
+            info.id.clone(),
+            info.data.clone(),
+            "delayed".to_string(),
+        )
+        .await?;
+
+        let delayed_name = delayed(name);
+        let delayed = RedisJobInternal::get_info_from_hash::<Uuid, ErroredInfo<Uuid, TestData>>(
+            &mut con,
+            &delayed_name,
+            &info.id,
+        )
+        .await?;
+        assert!(delayed.is_some());
+        let delayed = delayed.unwrap().into_destruct();
+        assert_eq!(delayed.data, info.data);
+
+        let len = RedisJobInternal::get_hash_len(&mut con, &delayed_name).await?;
+        assert_eq!(len, 1);
+
+        RedisJobInternal::remove_delayed_info(&mut con, name, &info.id).await?;
+
+        let len = RedisJobInternal::get_hash_len(&mut con, &delayed_name).await?;
+        assert_eq!(len, 0);
+
+        RedisJobInternal::mark_done(&mut con, name, &result.id).await?;
+        Ok(())
+    }
+
+    #[test_with::env(REDIS_URL)]
+    #[tokio::test]
+    async fn test_failed() -> Result<(), Error> {
+        let pool = create_pool()?;
+        let mut con = pool.get().await?;
+        let name = "test_failed";
+        let member = "m_test_failed";
+        let data = TestData {
+            a: "testtss".to_string(),
+        };
+        let info = QueueInfo::new(Uuid::new_v4(), data);
+        RedisJobInternal::insert_waiting(&mut con, name, &info).await?;
+        let result: QueueData<Uuid, TestData> =
+            RedisJobInternal::pop_to_process(&mut con, name, member)
+                .await?
+                .unwrap();
+        println!("result: {result:?}");
+        let info = result.info.into_destruct();
+        RedisJobInternal::push_failed_info(
+            &mut con,
+            name,
+            info.id.clone(),
+            info.data.clone(),
+            "failed".to_string(),
+        )
+        .await?;
+        RedisJobInternal::mark_done(&mut con, name, &result.id).await?;
+
+        let failed_name = failed(name);
+        let delayed = RedisJobInternal::get_info_from_hash::<Uuid, ErroredInfo<Uuid, TestData>>(
+            &mut con,
+            &failed_name,
+            &info.id,
+        )
+        .await?;
+        assert!(delayed.is_some());
+        let delayed = delayed.unwrap().into_destruct();
+        assert_eq!(delayed.data, info.data);
+
+        let len = RedisJobInternal::get_hash_len(&mut con, &failed_name).await?;
+        assert_eq!(len, 1);
+
+        RedisJobInternal::remove_failed_info(&mut con, name, &info.id).await?;
+
+        let len = RedisJobInternal::get_hash_len(&mut con, &failed_name).await?;
+        assert_eq!(len, 0);
+
         Ok(())
     }
 }

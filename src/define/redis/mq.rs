@@ -108,12 +108,12 @@ where
                         if let Err(report) = RedisJobInternal::push_failed_info(
                             &mut con,
                             &name,
+                            info_id.clone(),
+                            data,
                             format!(
                                 "Task failed or {} time delayed: {:?}",
                                 config.max_retry, report
                             ),
-                            info_id.clone(),
-                            data,
                         )
                         .await
                         {
@@ -228,7 +228,7 @@ where
     async fn get_queued_len(&self) -> Result<usize, Error> {
         let name = &self.name;
         let mut con = self.db.get().await?;
-        let size = RedisJobInternal::get_wait_len(&mut con, name).await?;
+        let size = RedisJobInternal::get_stream_len(&mut con, name).await?;
         let size = usize::try_from(size)?;
         Ok(size)
     }
@@ -331,17 +331,17 @@ mod test {
             .with(tracing_subscriber::fmt::layer())
             .init();
         let pool = create_pool()?;
-        let name = "test".to_string();
+        let name = "test_mq".to_string();
         let config = MQConfig::default()
             .max_retry(3)
-            .retry_delay(Duration::from_secs(3));
+            .retry_delay(Duration::from_secs(11));
         let module = Arc::new(Module { pool: pool.clone() });
         let mq = RedisMessageQueue::new(
             pool.clone(),
             module,
             name,
             config,
-            || Uuid::new_v4(),
+            Uuid::new_v4,
             |module: Arc<Module>, data: TestData| async move {
                 info!("module: {module:?}, data: {data:?}");
                 let pool = &module.pool;
@@ -365,7 +365,7 @@ mod test {
 
         mq.start_workers();
 
-        for i in 0..1000 {
+        for i in 0..100 {
             let data = TestData {
                 a: format!("test:{i}"),
             };

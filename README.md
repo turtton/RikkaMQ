@@ -56,7 +56,7 @@ async fn main() -> Result<(), rikka_mq::error::Error> {
         module,
         name,
         MQConfig::default(),
-        || UUID::new_v4(),
+        UUID::new_v4,
         |module: Arc<Module>, data: TestData| async move {
             let pool = &module.pool;
             let con = pool.get().await
