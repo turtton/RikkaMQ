@@ -12,7 +12,7 @@ Dependencies
 - tracing(optional)
 
 ```toml
-rikka_mq = { version = "", features = ["redis", "tracing"] }
+rikka-mq = { version = "", features = ["redis", "tracing"] }
 ```
 
 ```rust
