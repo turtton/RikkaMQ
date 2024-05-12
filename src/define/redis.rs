@@ -441,7 +441,7 @@ mod test {
         RedisJobInternal::push_delayed_info(
             &mut con,
             name,
-            info.id.clone(),
+            info.id,
             info.data.clone(),
             "delayed".to_string(),
         )
@@ -491,7 +491,7 @@ mod test {
         RedisJobInternal::push_failed_info(
             &mut con,
             name,
-            info.id.clone(),
+            info.id,
             info.data.clone(),
             "failed".to_string(),
         )
