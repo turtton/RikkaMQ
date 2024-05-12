@@ -304,14 +304,21 @@ mod test {
     use crate::error::{Error, ErrorOperation};
     use crate::info::QueueInfo;
     use crate::mq::MessageQueue;
+    use deadpool_redis::Pool;
     use rand::random;
     use std::str::FromStr;
+    use std::sync::Arc;
     use std::time::Duration;
     use tokio::time::sleep;
     use tracing::info;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
     use uuid::Uuid;
+
+    #[derive(Debug)]
+    struct Module {
+        pool: Pool,
+    }
 
     #[test_with::env(REDIS_URL)]
     #[tokio::test]
@@ -328,14 +335,21 @@ mod test {
         let config = MQConfig::default()
             .max_retry(3)
             .retry_delay(Duration::from_secs(3));
+        let module = Arc::new(Module { pool: pool.clone() });
         let mq = RedisMessageQueue::new(
             pool.clone(),
-            (),
+            module,
             name,
             config,
             || Uuid::new_v4(),
-            |_none, data: TestData| async move {
-                info!("data: {data:?}");
+            |module: Arc<Module>, data: TestData| async move {
+                info!("module: {module:?}, data: {data:?}");
+                let pool = &module.pool;
+                let _con = pool
+                    .get()
+                    .await
+                    .map_err(|e| ErrorOperation::Delay(format!("{e:?}")))?;
+                // Any transactions between db
                 sleep(Duration::from_millis(20)).await;
                 // 50% change of failure
                 if random() {
