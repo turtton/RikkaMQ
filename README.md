@@ -2,18 +2,18 @@
 
 Simple message queue library for rust
 
-Depends
-
-- uuid
-- serde
-
 ### Redis implementation
 
-Depends
+Dependencies
 
 - deadpool-redis
 - redis
 - tokio
+- tracing(optional)
+
+```toml
+rikka_mq = { version = "", features = ["redis", "tracing"] }
+```
 
 ```rust
 use deadpool_redis::{Config, CreatePoolError, Pool, Runtime};

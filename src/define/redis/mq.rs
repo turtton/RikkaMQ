@@ -10,7 +10,9 @@ use std::fmt::Display;
 use std::marker::PhantomData;
 use std::sync::Mutex;
 use std::time::Duration;
+#[cfg(feature = "tokio")]
 use tokio::time::sleep;
+#[cfg(feature = "tracing")]
 use tracing::{debug, error, warn};
 
 impl From<PoolError> for Error {
@@ -60,7 +62,9 @@ where
                 let mut con = match db.get().await {
                     Ok(con) => con,
                     Err(report) => {
+                        #[cfg(feature = "tracing")]
                         error!("{report:?}");
+                        #[cfg(feature = "tokio")]
                         sleep(Duration::from_secs(1)).await;
                         continue;
                     }
@@ -79,12 +83,15 @@ where
                     Ok(Some(data)) => data,
                     Ok(None) => continue,
                     Err(report) => {
+                        #[cfg(feature = "tracing")]
                         error!("{report:?}");
+                        #[cfg(feature = "tokio")]
                         sleep(Duration::from_secs(1)).await;
                         continue;
                     }
                 }
             };
+            #[cfg(feature = "tracing")]
             debug!("Processing Id: {queue_id}, TryCount: {delivered_count}");
             let DestructQueueInfo { id: info_id, data }: DestructQueueInfo<I, T> =
                 info.into_destruct();
@@ -97,6 +104,7 @@ where
                 let mut con = match transact {
                     Ok(con) => con,
                     Err(report) => {
+                        #[cfg(feature = "tracing")]
                         error!("{report:?}");
                         continue;
                     }
@@ -117,8 +125,10 @@ where
                         )
                         .await
                         {
+                            #[cfg(feature = "tracing")]
                             error!("{report:?}");
                         }
+                        #[cfg(feature = "tracing")]
                         error!("Failed Id: {queue_id}, TryCount: {delivered_count}");
                     } else if let ErrorOperation::Delay(_) = report {
                         if let Err(report) = RedisJobInternal::push_delayed_info(
@@ -130,20 +140,25 @@ where
                         )
                         .await
                         {
+                            #[cfg(feature = "tracing")]
                             error!("{report:?}");
                         }
+                        #[cfg(feature = "tracing")]
                         warn!("Delayed Id: {queue_id}, TryCount: {delivered_count}, Report: {report:?}");
                         continue;
                     }
                 } else {
+                    #[cfg(feature = "tracing")]
                     debug!("Done Id: {queue_id}, TryCount: {delivered_count}");
                 }
                 if let Err(report) = RedisJobInternal::mark_done(&mut con, &name, &queue_id).await {
+                    #[cfg(feature = "tracing")]
                     error!("{report:?}");
                 } else if delivered_count > 0 {
                     if let Err(report) =
                         RedisJobInternal::remove_delayed_info(&mut con, &name, &info_id).await
                     {
+                        #[cfg(feature = "tracing")]
                         error!("{report:?}");
                     };
                 };
