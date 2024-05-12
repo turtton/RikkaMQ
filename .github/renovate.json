@@ -1,0 +1,23 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":timezone(Asia/Tokyo)"
+  ],
+  "schedule": [
+    "after 1pm and before 5pm on Friday"
+  ],
+  "labels": [
+    "dependencies"
+  ],
+  "packageRules": [
+    {
+      "matchUpdateTypes": [
+        "patch"
+      ],
+      "groupName": "dependencies (patch)",
+      "automerge": true,
+      "automergeStrategy": "squash"
+    }
+  ]
+}
