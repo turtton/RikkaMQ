@@ -37,4 +37,4 @@ tokio = { version = "1.0.1", features = ["macros"] }
 rand = "0.8.5"
 uuid = { version = "1.8.0", features = ["v4", "serde"] }
 dotenvy = "0.15.7"
-test-with = { version = "*", default-features = false, features = [] }
+test-with = { version = "0.12.6", default-features = false, features = [] }
