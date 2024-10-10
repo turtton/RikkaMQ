@@ -17,6 +17,11 @@ concurrency:
 
 jobs:
   check:
+    services:
+      postgres:
+        image: eqalpha/keydb
+        ports:
+          - "6379:6379"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,4 +30,6 @@ jobs:
       - name: Build
         run: cargo build --verbose --all-features
       - name: Test
-        run: cargo test --verbose
+        run: cargo test --verbose --all-features
+        env:
+          REDIS_URL: redis://localhost:6379/
