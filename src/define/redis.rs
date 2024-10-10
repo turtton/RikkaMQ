@@ -82,7 +82,7 @@ struct RedisJobInternal;
 
 impl RedisJobInternal {
     async fn create_group(con: &mut Connection, name: &str) -> RedisResult<Value> {
-        con.xgroup_create_mkstream(name, &group(name), 0).await
+        con.xgroup_create_mkstream(name, group(name), 0).await
     }
 
     async fn insert_waiting<I: Display + Serialize, T: Serialize>(
@@ -146,7 +146,7 @@ impl RedisJobInternal {
     }
 
     async fn mark_done(con: &mut Connection, name: &str, id: &str) -> Result<(), Error> {
-        con.xack(name, &group(name), &[id]).await?;
+        con.xack(name, group(name), &[id]).await?;
         con.xdel(name, &[id]).await?;
         Ok(())
     }
@@ -238,7 +238,7 @@ impl RedisJobInternal {
         let string_id = id.to_string();
         let info = ErroredInfo::new(id, data, info);
         let raw = serde_json::to_string(&info)?;
-        con.hset(&delayed(name), &string_id, &raw).await?;
+        con.hset(delayed(name), &string_id, &raw).await?;
         Ok(())
     }
 
@@ -247,7 +247,7 @@ impl RedisJobInternal {
         name: &str,
         id: &I,
     ) -> Result<(), Error> {
-        con.hdel(&delayed(name), &id.to_string()).await?;
+        con.hdel(delayed(name), id.to_string()).await?;
         Ok(())
     }
 
@@ -256,7 +256,7 @@ impl RedisJobInternal {
         name: &str,
         id: &I,
     ) -> Result<(), Error> {
-        con.hdel(&failed(name), &id.to_string()).await?;
+        con.hdel(failed(name), id.to_string()).await?;
         Ok(())
     }
 
@@ -280,7 +280,7 @@ impl RedisJobInternal {
         let raw_id = id.to_string();
         let data = ErroredInfo::new(id, data, info);
         let raw = serde_json::to_string(&data)?;
-        con.hset(&failed(name), &raw_id, &raw).await?;
+        con.hset(failed(name), &raw_id, &raw).await?;
         Ok(())
     }
 
@@ -336,7 +336,7 @@ impl RedisJobInternal {
         name: &str,
         id: &I,
     ) -> Result<Option<T>, Error> {
-        let result: Value = con.hget(name, &id.to_string()).await?;
+        let result: Value = con.hget(name, id.to_string()).await?;
         match result {
             Value::Data(data) => {
                 let info = serde_json::from_slice(&data)?;
