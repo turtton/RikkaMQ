@@ -349,7 +349,7 @@ mod test {
         let name = "test_mq".to_string();
         let config = MQConfig::default()
             .max_retry(3)
-            .retry_delay(Duration::from_secs(11));
+            .retry_delay(Duration::from_secs(1));
         let module = Arc::new(Module { pool: pool.clone() });
         let mq = RedisMessageQueue::new(
             pool.clone(),
