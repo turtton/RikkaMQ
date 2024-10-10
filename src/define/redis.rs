@@ -1,4 +1,4 @@
-mod mq;
+pub mod mq;
 
 use crate::error::Error;
 use crate::info::{ErroredInfo, QueueInfo};
