@@ -2,10 +2,9 @@ pub mod mq;
 
 use crate::error::Error;
 use crate::info::{ErroredInfo, QueueInfo};
-use deadpool_redis::redis::{AsyncCommands, RedisResult, Value};
+use deadpool_redis::redis::streams::StreamReadOptions;
+use deadpool_redis::redis::{cmd, AsyncCommands, ErrorKind, RedisError, RedisResult, Value};
 use deadpool_redis::Connection;
-use redis::streams::StreamReadOptions;
-use redis::{ErrorKind, RedisError};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use std::str::from_utf8;
@@ -93,7 +92,7 @@ impl RedisJobInternal {
         // Ignore error
         let _ = Self::create_group(con, name).await;
         let serialize = serde_json::to_string(info)?;
-        con.xadd(name, "*", &[(QUEUE_FIELD, &serialize)]).await?;
+        let _: Value = con.xadd(name, "*", &[(QUEUE_FIELD, &serialize)]).await?;
         Ok(())
     }
 
@@ -146,8 +145,8 @@ impl RedisJobInternal {
     }
 
     async fn mark_done(con: &mut Connection, name: &str, id: &str) -> Result<(), Error> {
-        con.xack(name, group(name), &[id]).await?;
-        con.xdel(name, &[id]).await?;
+        let _: Value = con.xack(name, group(name), &[id]).await?;
+        let _: Value = con.xdel(name, &[id]).await?;
         Ok(())
     }
 
@@ -167,7 +166,7 @@ impl RedisJobInternal {
         let _ = Self::create_group(con, name).await;
         let time_millis = u64::try_from(idle_time.as_millis())?;
         let group = group(name);
-        let value: Value = redis::cmd("XPENDING")
+        let value: Value = cmd("XPENDING")
             .arg(name)
             .arg(&group)
             .arg("IDLE")
@@ -238,7 +237,7 @@ impl RedisJobInternal {
         let string_id = id.to_string();
         let info = ErroredInfo::new(id, data, info);
         let raw = serde_json::to_string(&info)?;
-        con.hset(delayed(name), &string_id, &raw).await?;
+        let _: Value = con.hset(delayed(name), &string_id, &raw).await?;
         Ok(())
     }
 
@@ -247,7 +246,7 @@ impl RedisJobInternal {
         name: &str,
         id: &I,
     ) -> Result<(), Error> {
-        con.hdel(delayed(name), id.to_string()).await?;
+        let _: Value = con.hdel(delayed(name), id.to_string()).await?;
         Ok(())
     }
 
@@ -256,7 +255,7 @@ impl RedisJobInternal {
         name: &str,
         id: &I,
     ) -> Result<(), Error> {
-        con.hdel(failed(name), id.to_string()).await?;
+        let _: Value = con.hdel(failed(name), id.to_string()).await?;
         Ok(())
     }
 
@@ -280,7 +279,7 @@ impl RedisJobInternal {
         let raw_id = id.to_string();
         let data = ErroredInfo::new(id, data, info);
         let raw = serde_json::to_string(&data)?;
-        con.hset(failed(name), &raw_id, &raw).await?;
+        let _: Value = con.hset(failed(name), &raw_id, &raw).await?;
         Ok(())
     }
 
@@ -302,7 +301,7 @@ impl RedisJobInternal {
         if *size <= 0 {
             return Ok(vec![]);
         }
-        let result: Value = redis::cmd("HSCAN")
+        let result: Value = cmd("HSCAN")
             .arg(name)
             .arg(offset)
             .arg("COUNT")
