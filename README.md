@@ -70,10 +70,10 @@ async fn main() -> Result<(), rikka_mq::error::Error> {
     mq.start_workers();
 
     for i in 0..1000 {
-        let data = QueueData {
+        let data = TestData {
             a: format!("message:{i}"),
         };
-        let data = QueueInfo::from(data);
+        let data = QueueInfo::new(Uuid::new_v4(), data);
         // Queue
         mq.queue(data).await?;
     }
