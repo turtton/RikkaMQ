@@ -3,7 +3,7 @@ use std::error::Error as StdError;
 use std::num::TryFromIntError;
 use std::str::Utf8Error;
 
-type BoxedError = Box<dyn StdError + Send>;
+type BoxedError = Box<dyn StdError + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, Eq, PartialEq, thiserror::Error)]
 #[non_exhaustive]
