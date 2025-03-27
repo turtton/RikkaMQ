@@ -18,7 +18,7 @@ exclude = [
 default = []
 tracing = ["dep:tracing"]
 tokio = ["dep:tokio"]
-redis = ["dep:redis", "deadpool-redis", "tokio"]
+redis = ["deadpool-redis", "tokio"]
 
 [dependencies]
 thiserror = "2.0.0"
@@ -26,8 +26,7 @@ serde = { version = "1.0.197", features = ["derive"] }
 serde_json = "1.0.115"
 destructure = "0.5.6"
 
-deadpool-redis = { version = "0.20.0", optional = true }
-redis = { version = "0.27.4", features = ["tokio", "streams"], optional = true }
+deadpool-redis = { version = "0.20.0", optional = true, features = ["streams"] }
 tracing = { version = "0.1.40", optional = true }
 tokio = { version = "1.0.1", optional = true }
 
