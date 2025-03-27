@@ -5,7 +5,7 @@ use std::str::Utf8Error;
 
 type BoxedError = Box<dyn StdError + Send>;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, Eq, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ErrorOperation {
     #[error("Operation delayed: {0}")]
