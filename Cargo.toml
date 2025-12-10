@@ -24,7 +24,7 @@ redis = ["deadpool-redis", "tokio"]
 thiserror = "2.0.0"
 serde = { version = "1.0.197", features = ["derive"] }
 serde_json = "1.0.115"
-destructure = "0.5.6"
+destructure = "0.7.0"
 
 deadpool-redis = { version = "0.20.0", optional = true, features = ["streams"] }
 tracing = { version = "0.1.40", optional = true }
