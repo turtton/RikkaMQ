@@ -34,7 +34,7 @@ fn delayed(name: &str) -> String {
 impl From<Value> for Error {
     fn from(value: Value) -> Self {
         Error::ConversionError(Box::new(RedisError::from((
-            ErrorKind::ParseError,
+            ErrorKind::Parse,
             "Failed to parse",
             format!("value: {value:?}"),
         ))))
@@ -44,7 +44,7 @@ impl From<Value> for Error {
 impl From<Vec<Value>> for Error {
     fn from(value: Vec<Value>) -> Self {
         Error::ConversionError(Box::new(RedisError::from((
-            ErrorKind::ParseError,
+            ErrorKind::Parse,
             "Failed to parse",
             format!("value: {value:?}"),
         ))))
@@ -54,7 +54,7 @@ impl From<Vec<Value>> for Error {
 impl From<&Vec<Value>> for Error {
     fn from(value: &Vec<Value>) -> Self {
         Error::ConversionError(Box::new(RedisError::from((
-            ErrorKind::ParseError,
+            ErrorKind::Parse,
             "Failed to parse",
             format!("value: {value:?}"),
         ))))
@@ -64,7 +64,7 @@ impl From<&Vec<Value>> for Error {
 impl From<&[Value]> for Error {
     fn from(value: &[Value]) -> Self {
         Error::ConversionError(Box::new(RedisError::from((
-            ErrorKind::ParseError,
+            ErrorKind::Parse,
             "Failed to parse",
             format!("value: {value:?}"),
         ))))
