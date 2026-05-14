@@ -21,24 +21,35 @@ or they are removed manually.
 
 ### Redis implementation
 
-Dependencies
+Library dependencies
 
 - deadpool-redis
-- redis
-- tokio
+- redis (via deadpool-redis)
+- tokio runtime
 - tracing(optional)
+
+Example application dependencies also need `serde`, `uuid`, `dotenvy`, and
+`tracing-subscriber` if you use the sample below as-is.
+
+Migration note: the Redis implementation moved from
+`rikka_mq::define::redis::mq::RedisMessageQueue` to
+`rikka_mq::backend::redis::RedisMessageQueue` in v0.2.
 
 ```toml
 rikka-mq = { version = "", features = ["redis", "tracing"] }
 ```
 
 ```rust
-use deadpool_redis::{Config, CreatePoolError, Pool, Runtime};
+use deadpool_redis::{Config, Pool, Runtime};
+use rikka_mq::backend::redis::RedisMessageQueue;
 use rikka_mq::config::MQConfig;
-use rikka_mq::define::redis::mq::RedisMessageQueue;
+use rikka_mq::error::ErrorOperation;
+use rikka_mq::handler::into_handler;
 use rikka_mq::info::QueueInfo;
 use rikka_mq::mq::MessageQueue;
+use rikka_mq::worker::WorkerControl;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -63,39 +74,39 @@ async fn main() -> Result<(), rikka_mq::error::Error> {
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
-    let url = dotenvy::var(REDIS_URL).unwrap();
+    let url = dotenvy::var("REDIS_URL").unwrap();
     let cfg = Config::from_url(url);
     let redis_pool = cfg.create_pool(Some(Runtime::Tokio1))?;
-    let name = "mq_name".to_string();
-    let module = Arc::new(redis_pool.clone());
-    let mq = RedisMessageQueue::new(
-        redis_pool,
-        module,
-        name,
-        MQConfig::default(),
-        UUID::new_v4,
-        |module: Arc<Module>, data: TestData| async move {
+    let module = Arc::new(Module { pool: redis_pool.clone() });
+    let mq = RedisMessageQueue::<Uuid, QueueData>::builder()
+        .pool(redis_pool)
+        .name("mq_name")
+        .config(MQConfig::default())
+        .consumer_id_generator(|| format!("consumer-{}", Uuid::new_v4()))
+        .build()?;
+
+    let handler = into_handler(|module: Arc<Module>, data: QueueData| async move {
             let pool = &module.pool;
-            let con = pool.get().await
-                .map_err(|e| ErrorOperation::Delay(format!("{e:?}")))?;
+            let _con = pool.get().await
+                .map_err(|e| ErrorOperation::Delay(Box::new(e)))?;
             // Any transactions between db
             info!("{:?}, {:?}", module, data);
             Ok(())
-        },
-    );
+    });
 
-    mq.start_workers();
+    let workers = mq.start_workers(module, handler).await?;
 
     for i in 0..1000 {
-        let data = TestData {
+        let data = QueueData {
             a: format!("message:{i}"),
         };
         let data = QueueInfo::new(Uuid::new_v4(), data);
         // Queue
-        mq.queue(data).await?;
+        mq.enqueue(data).await?;
     }
 
     tokio::signal::ctrl_c().await?;
+    workers.shutdown().await?;
     Ok(())
 }
 ```
@@ -107,3 +118,7 @@ KeyDB(for testing redis implementation)
 ```shell
 podman run --rm --name rikka-mq -p 6379:6379 docker.io/eqalpha/keydb
 ```
+
+`tests/worker_shutdown.rs` uses `testcontainers` and is marked `#[ignore]`;
+run it with `cargo test --test worker_shutdown --all-features -- --ignored`
+when Docker is available.
