@@ -113,7 +113,10 @@ where
                 if let Err(report) = result {
                     let is_failed = matches!(&report, ErrorOperation::Fail(_));
                     if is_failed || delivered_count > config.max_retry.into() {
-                        if let Err(report) = RedisJobInternal::push_failed_info(
+                        // Persist failed record before XACK/XDEL. On persist
+                        // failure, skip mark_done so the entry stays in the
+                        // PEL and gets re-claimed via XPENDING+XCLAIM.
+                        if let Err(persist_err) = RedisJobInternal::push_failed_info(
                             &mut con,
                             &name,
                             info_id.clone(),
@@ -126,12 +129,16 @@ where
                         .await
                         {
                             #[cfg(feature = "tracing")]
-                            error!("{report:?}");
+                            error!(
+                                "Failed to persist failed info (will retry via PEL). Id: {queue_id}, TryCount: {delivered_count}, Error: {persist_err:?}"
+                            );
+                            continue;
                         }
                         #[cfg(feature = "tracing")]
                         error!("Failed Id: {queue_id}, TryCount: {delivered_count}");
                     } else if let ErrorOperation::Delay(_) = report {
-                        if let Err(report) = RedisJobInternal::push_delayed_info(
+                        // Same PEL-retry contract as the failed branch above.
+                        if let Err(persist_err) = RedisJobInternal::push_delayed_info(
                             &mut con,
                             &name,
                             info_id,
@@ -141,7 +148,10 @@ where
                         .await
                         {
                             #[cfg(feature = "tracing")]
-                            error!("{report:?}");
+                            error!(
+                                "Failed to persist delayed info (will retry via PEL). Id: {queue_id}, TryCount: {delivered_count}, Error: {persist_err:?}"
+                            );
+                            continue;
                         }
                         #[cfg(feature = "tracing")]
                         warn!("Delayed Id: {queue_id}, TryCount: {delivered_count}, Report: {report:?}");
@@ -200,22 +210,16 @@ where
     }
 
     fn start_workers(&self) {
-        let mut i = 0;
-        loop {
-            if i >= self.config.worker_count {
-                break;
-            }
+        for _ in 0..self.config.worker_count {
             let db = self.db.clone();
             let module = self.module.clone();
-            let process = self.worker_process.lock();
-            let process = match process {
+            let process = match self.worker_process.lock() {
                 Ok(guard) => guard.clone_box(),
-                Err(_) => continue,
+                Err(poisoned) => poisoned.into_inner().clone_box(),
             };
-            let id_generator = self.id_generator.lock();
-            let id_generator = match id_generator {
-                Ok(guard) => guard.clone(),
-                Err(_) => continue,
+            let id_generator = match self.id_generator.lock() {
+                Ok(guard) => *guard.clone(),
+                Err(poisoned) => *poisoned.into_inner().clone(),
             };
             let name = self.name.clone();
             let config = self.config.clone();
@@ -225,12 +229,11 @@ where
                     module,
                     name,
                     config,
-                    id_generator,
+                    Box::new(id_generator),
                     process,
                 )
                 .await;
             });
-            i += 1;
         }
     }
 
@@ -298,14 +301,18 @@ where
         let failed_info: Option<ErroredInfo<I, T>> =
             RedisJobInternal::get_info_from_hash(&mut con, &failed, id).await?;
         if let Some(info) = failed_info {
-            RedisJobInternal::remove_failed_info(&mut con, &self.name, id).await?;
             let DestructErroredInfo {
                 id,
                 data,
                 stack_trace: _,
             }: DestructErroredInfo<I, T> = info.into_destruct();
-            let info = QueueInfo::new(id, data.clone());
-            RedisJobInternal::insert_waiting(&mut con, &self.name, &info).await?;
+            // At-least-once: enqueue before removing the failed record so a
+            // crash between the two steps yields a duplicate, never a loss.
+            let waiting = QueueInfo::new(id, data);
+            RedisJobInternal::insert_waiting(&mut con, &self.name, &waiting).await?;
+            let DestructQueueInfo { id, data: _ }: DestructQueueInfo<I, T> =
+                waiting.into_destruct();
+            RedisJobInternal::remove_failed_info(&mut con, &self.name, &id).await?;
         }
         Ok(())
     }

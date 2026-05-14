@@ -2,6 +2,23 @@
 
 Simple message queue library for rust
 
+## Retry semantics
+
+A handler can return `Ok(())`, `Err(ErrorOperation::Delay(_))`, or
+`Err(ErrorOperation::Fail(_))`.
+
+- `Ok(())` acknowledges the message.
+- `Delay` keeps the message in the consumer group's pending list. After
+  `MQConfig::retry_delay` has elapsed it is re-delivered to a worker. The
+  handler runs at most `max_retry + 1` times in total (one initial attempt
+  plus up to `max_retry` re-deliveries). Once that budget is exceeded the
+  message is moved to the failed hash.
+- `Fail` skips the retry budget and sends the message to the failed hash
+  immediately.
+
+Failed messages stay in the failed hash until `retry_failed(&id)` is called
+or they are removed manually.
+
 ### Redis implementation
 
 Dependencies
