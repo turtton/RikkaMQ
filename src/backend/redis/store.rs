@@ -335,11 +335,10 @@ where
     > {
         Box::pin(async move {
             let mut con = self.ops.connection().await?;
-            let mut result = self.pop_pending(&mut con).await;
-            if result.is_err() || result.as_ref().is_ok_and(Option::is_none) {
-                result = self.pop_to_process(&mut con).await;
+            match self.pop_pending(&mut con).await? {
+                Some(claimed) => Ok(Some(claimed)),
+                None => self.pop_to_process(&mut con).await,
             }
-            result
         })
     }
 

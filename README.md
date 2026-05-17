@@ -36,7 +36,7 @@ Migration note: the Redis implementation moved from
 `rikka_mq::backend::redis::RedisMessageQueue` in v0.2.
 
 ```toml
-rikka-mq = { version = "", features = ["redis", "tracing"] }
+rikka-mq = { version = "0.2.0-alpha.1", features = ["redis", "tracing"] }
 ```
 
 ```rust
@@ -105,7 +105,9 @@ async fn main() -> Result<(), rikka_mq::error::Error> {
         mq.enqueue(data).await?;
     }
 
-    tokio::signal::ctrl_c().await?;
+    tokio::signal::ctrl_c()
+        .await
+        .map_err(|e| rikka_mq::error::Error::Backend(Box::new(e)))?;
     workers.shutdown().await?;
     Ok(())
 }

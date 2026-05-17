@@ -1,9 +1,16 @@
 use crate::error::Error;
 use crate::info::{ErroredInfo, QueueInfo};
+use std::fmt;
 use std::future::Future;
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Clone, Eq, PartialEq, Hash)]
 pub struct Cursor(pub(crate) String);
+
+impl fmt::Debug for Cursor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Cursor(_)")
+    }
+}
 
 impl Cursor {
     pub(crate) fn new(raw: impl Into<String>) -> Self {

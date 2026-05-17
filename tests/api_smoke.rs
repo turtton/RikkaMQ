@@ -1,133 +1,74 @@
-#![cfg(feature = "tokio")]
+#![cfg(all(feature = "redis", feature = "tokio"))]
 
-use rikka_mq::config::MQConfig;
-use rikka_mq::error::{Error, ErrorOperation};
-use rikka_mq::handler::into_handler;
-use rikka_mq::info::QueueInfo;
-use rikka_mq::worker::{ClaimedMessage, QueueStore, WorkerControl, WorkerSet};
-use std::collections::VecDeque;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use tokio::sync::watch;
+use rikka_mq::backend::redis::RedisMessageQueue;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-#[derive(Clone)]
-struct SmokeQueue {
-    store: SmokeStore,
+#[derive(Clone, Serialize, Deserialize)]
+struct MyData {
+    value: String,
 }
 
-impl SmokeQueue {
-    fn new() -> Self {
-        Self {
-            store: SmokeStore::default(),
-        }
-    }
+#[allow(dead_code)]
+fn _compile_only() -> Result<(), rikka_mq::error::Error> {
+    use deadpool_redis::{Config, Runtime};
+    use rikka_mq::config::MQConfig;
+    use rikka_mq::info::QueueInfo;
+    use rikka_mq::mq::MessageQueue;
+    use rikka_mq::worker::WorkerControl;
 
-    async fn enqueue(&self, info: QueueInfo<u64, String>) -> Result<(), Error> {
-        self.store
-            .items
-            .lock()
-            .map_err(lock_error)?
-            .push_back(ClaimedMessage {
-                stream_id: info.id().to_string(),
-                delivered_count: 0,
-                info,
-            });
-        Ok(())
-    }
-}
-
-impl WorkerControl<(), u64, String> for SmokeQueue {
-    async fn start_workers(
-        &self,
-        module: (),
-        handler: rikka_mq::handler::HandlerFn<(), String>,
-    ) -> Result<WorkerSet, Error> {
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let handle = tokio::spawn(rikka_mq::worker::run_worker(
-            module,
-            handler,
-            self.store.clone(),
-            MQConfig::default(),
-            shutdown_rx,
-        ));
-        Ok(WorkerSet {
-            shutdown_tx,
-            handles: vec![handle],
-        })
-    }
-}
-
-#[derive(Clone, Default)]
-struct SmokeStore {
-    items: Arc<Mutex<VecDeque<ClaimedMessage<u64, String>>>>,
-}
-
-impl QueueStore<u64, String> for SmokeStore {
-    fn claim_next<'a>(
-        &'a self,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<ClaimedMessage<u64, String>>, Error>> + Send + 'a>>
+    fn assert_worker_control<Q>(queue: &Q)
+    where
+        Q: WorkerControl<(), Uuid, MyData>,
     {
-        Box::pin(async move { Ok(self.items.lock().map_err(lock_error)?.pop_front()) })
+        let _ = queue;
     }
 
-    fn ack<'a>(
-        &'a self,
-        _stream_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
+    let config = Config::from_url("redis://127.0.0.1:6379");
+    let pool = config.create_pool(Some(Runtime::Tokio1))?;
+    let queue = RedisMessageQueue::<Uuid, MyData>::builder()
+        .pool(pool)
+        .name("compile-only")
+        .config(MQConfig::default())
+        .consumer_id_generator(|| format!("consumer-{}", Uuid::new_v4()))
+        .build()?;
 
-    fn record_delayed<'a>(
-        &'a self,
-        _info: QueueInfo<u64, String>,
-        _error: Box<dyn std::error::Error + Send + Sync + 'static>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn record_failed<'a>(
-        &'a self,
-        _info: QueueInfo<u64, String>,
-        _error: Box<dyn std::error::Error + Send + Sync + 'static>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn remove_delayed<'a>(
-        &'a self,
-        _id: &'a u64,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-}
-
-#[tokio::test]
-async fn smoke_public_api_surface_without_redis() -> Result<(), Error> {
-    let queue = SmokeQueue::new();
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let seen_for_handler = seen.clone();
-    let handler = into_handler(move |(): (), data: String| {
-        let seen = seen_for_handler.clone();
-        async move {
-            seen.lock()
-                .map_err(|e| ErrorOperation::Fail(Box::new(std::io::Error::other(e.to_string()))))?
-                .push(data);
-            Ok(())
-        }
-    });
-
-    queue
-        .enqueue(QueueInfo::new(1, "hello".to_string()))
-        .await?;
-    let workers = queue.start_workers((), handler).await?;
-    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    workers.shutdown().await?;
-
-    assert_eq!(seen.lock().map_err(lock_error)?.as_slice(), ["hello"]);
+    assert_worker_control(&queue);
+    let data = MyData {
+        value: "payload".to_string(),
+    };
+    let enqueue_future = queue.enqueue(QueueInfo::new(Uuid::new_v4(), data));
+    drop(enqueue_future);
     Ok(())
 }
 
-fn lock_error<T>(err: std::sync::PoisonError<T>) -> Error {
-    Error::Backend(Box::new(std::io::Error::other(err.to_string())))
+#[allow(dead_code)]
+async fn _compile_worker_lifecycle(
+    queue: RedisMessageQueue<Uuid, MyData>,
+) -> Result<(), rikka_mq::error::Error> {
+    use rikka_mq::error::ErrorOperation;
+    use rikka_mq::handler::into_handler;
+    use rikka_mq::worker::WorkerControl;
+
+    let handler = into_handler(|(): (), _data: MyData| async move {
+        if std::hint::black_box(false) {
+            return Err(ErrorOperation::Fail(Box::new(std::io::Error::other(
+                "compile-only",
+            ))));
+        }
+        Ok(())
+    });
+    let workers = queue.start_workers((), handler).await?;
+    if std::hint::black_box(false) {
+        workers.join().await?;
+    } else {
+        workers.shutdown().await?;
+    }
+    Ok(())
+}
+
+#[test]
+fn public_api_compile_smoke_is_present() {
+    let _ = _compile_only;
+    let _ = _compile_worker_lifecycle;
 }

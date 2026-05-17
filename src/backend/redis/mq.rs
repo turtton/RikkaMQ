@@ -89,9 +89,6 @@ where
                 run_worker(module, handler, store, config, shutdown_rx).await
             }));
         }
-        Ok(WorkerSet {
-            shutdown_tx,
-            handles,
-        })
+        Ok(WorkerSet::new(shutdown_tx, handles))
     }
 }

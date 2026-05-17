@@ -26,6 +26,11 @@ pub enum Error {
     #[error("deserialize error: {0}")]
     Deserialize(#[source] BoxedError),
 
+    /// Protocol-level parse/validation failure.
+    ///
+    /// This variant intentionally stores only the operation name and a textual
+    /// detail; source-chain preservation is reserved for I/O-level errors such
+    /// as [`Error::Pool`] and [`Error::Backend`].
     #[error("protocol error during {op}: {detail}")]
     Protocol { op: &'static str, detail: String },
 
