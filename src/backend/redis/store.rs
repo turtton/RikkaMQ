@@ -10,29 +10,56 @@ use std::error::Error as StdError;
 use std::fmt::Display;
 use std::marker::PhantomData;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Clone)]
 pub(crate) struct RedisStoreOps {
     pool: Pool,
     name: String,
+    /// Tracks whether the consumer group has been ensured on Redis for
+    /// this process; ensures `XGROUP CREATE MKSTREAM` runs at most once
+    /// per [`RedisMessageQueue`] (Phase 3 task 14).
+    group_initialized: Arc<tokio::sync::OnceCell<()>>,
 }
 
 impl RedisStoreOps {
     pub(crate) fn new(pool: Pool, name: String) -> Self {
-        Self { pool, name }
+        Self {
+            pool,
+            name,
+            group_initialized: Arc::new(tokio::sync::OnceCell::new()),
+        }
     }
 
     async fn connection(&self) -> Result<Connection, Error> {
         Ok(self.pool.get().await?)
     }
 
-    pub(crate) async fn create_group(&self, con: &mut Connection) -> Result<(), Error> {
-        let result = con
-            .xgroup_create_mkstream(&self.name, group(&self.name), "0")
-            .await;
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Idempotently ensure the consumer group exists. Runs the actual
+    /// `XGROUP CREATE MKSTREAM` only on the first successful call; later
+    /// callers observe the cached `()` and skip the round-trip entirely.
+    pub(crate) async fn ensure_group(&self, con: &mut Connection) -> Result<(), Error> {
+        if self.group_initialized.initialized() {
+            return Ok(());
+        }
+        self.group_initialized
+            .get_or_try_init(|| Self::create_group_once(con, &self.name))
+            .await?;
+        Ok(())
+    }
+
+    async fn create_group_once(con: &mut Connection, name: &str) -> Result<(), Error> {
+        let result: Result<Value, _> = con.xgroup_create_mkstream(name, group(name), "0").await;
         match result {
-            Ok::<Value, _>(_) => Ok(()),
+            Ok(_) => Ok(()),
+            // BUSYGROUP means the group already exists on the server (e.g.
+            // another process initialized it). We treat that as success
+            // because the post-condition - "group exists" - holds either way.
             Err(err) if err.to_string().contains("BUSYGROUP") => Ok(()),
             Err(err) => Err(err.into()),
         }
@@ -44,7 +71,7 @@ impl RedisStoreOps {
         T: Serialize,
     {
         let mut con = self.connection().await?;
-        self.create_group(&mut con).await?;
+        self.ensure_group(&mut con).await?;
         let serialized = serde_json::to_string(info).map_err(|e| Error::Serialize(Box::new(e)))?;
         let _: Value = con
             .xadd(&self.name, "*", &[(QUEUE_FIELD, serialized)])
@@ -176,14 +203,9 @@ pub(crate) struct RedisQueueStore<I, T> {
 }
 
 impl<I, T> RedisQueueStore<I, T> {
-    pub(crate) fn new(
-        pool: Pool,
-        name: String,
-        consumer_id: String,
-        retry_delay: Duration,
-    ) -> Self {
+    pub(crate) fn new(ops: RedisStoreOps, consumer_id: String, retry_delay: Duration) -> Self {
         Self {
-            ops: RedisStoreOps::new(pool, name),
+            ops,
             consumer_id,
             retry_delay,
             _marker: PhantomData,
@@ -214,7 +236,7 @@ where
         &self,
         con: &mut Connection,
     ) -> Result<Option<ClaimedMessage<I, T>>, Error> {
-        self.ops.create_group(con).await?;
+        self.ops.ensure_group(con).await?;
         let time_millis = u64::try_from(self.retry_delay.as_millis())?;
         let group_name = group(&self.ops.name);
         let value: Value = cmd("XPENDING")

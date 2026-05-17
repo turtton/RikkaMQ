@@ -1,6 +1,5 @@
 use super::keys::{delayed, failed};
 use super::mq::RedisMessageQueue;
-use super::store::RedisStoreOps;
 use crate::error::Error;
 use crate::info::{ErroredInfo, QueueInfo, StoredErroredInfo};
 use crate::inspect::{Cursor, FailedRetry, QueueInspector, ScanPage};
@@ -13,30 +12,22 @@ where
     T: Clone + Serialize + for<'de> Deserialize<'de> + Send + Sync + 'static,
 {
     async fn delayed_len(&self) -> Result<u64, Error> {
-        RedisStoreOps::new(self.pool.clone(), self.name.clone())
-            .hash_len(&delayed(&self.name))
-            .await
+        self.ops.hash_len(&delayed(self.ops.name())).await
     }
 
     async fn failed_len(&self) -> Result<u64, Error> {
-        RedisStoreOps::new(self.pool.clone(), self.name.clone())
-            .hash_len(&failed(&self.name))
-            .await
+        self.ops.hash_len(&failed(self.ops.name())).await
     }
 
     async fn get_delayed(&self, id: &I) -> Result<Option<QueueInfo<I, T>>, Error> {
         let stored: Option<StoredErroredInfo<I, T>> =
-            RedisStoreOps::new(self.pool.clone(), self.name.clone())
-                .get_hash(&delayed(&self.name), id)
-                .await?;
+            self.ops.get_hash(&delayed(self.ops.name()), id).await?;
         Ok(stored.map(|info| QueueInfo::new(info.id, info.data)))
     }
 
     async fn get_failed(&self, id: &I) -> Result<Option<ErroredInfo<I, T>>, Error> {
         let stored: Option<StoredErroredInfo<I, T>> =
-            RedisStoreOps::new(self.pool.clone(), self.name.clone())
-                .get_hash(&failed(&self.name), id)
-                .await?;
+            self.ops.get_hash(&failed(self.ops.name()), id).await?;
         Ok(stored.map(Into::into))
     }
 
@@ -46,8 +37,9 @@ where
         cursor: Option<Cursor>,
     ) -> Result<ScanPage<QueueInfo<I, T>>, Error> {
         let start = cursor.as_ref().map_or("0", Cursor::as_str);
-        let (items, next) = RedisStoreOps::new(self.pool.clone(), self.name.clone())
-            .scan_hash::<StoredErroredInfo<I, T>>(&delayed(&self.name), limit, start)
+        let (items, next) = self
+            .ops
+            .scan_hash::<StoredErroredInfo<I, T>>(&delayed(self.ops.name()), limit, start)
             .await?;
         Ok(ScanPage {
             items: items
@@ -64,8 +56,9 @@ where
         cursor: Option<Cursor>,
     ) -> Result<ScanPage<ErroredInfo<I, T>>, Error> {
         let start = cursor.as_ref().map_or("0", Cursor::as_str);
-        let (items, next) = RedisStoreOps::new(self.pool.clone(), self.name.clone())
-            .scan_hash::<StoredErroredInfo<I, T>>(&failed(&self.name), limit, start)
+        let (items, next) = self
+            .ops
+            .scan_hash::<StoredErroredInfo<I, T>>(&failed(self.ops.name()), limit, start)
             .await?;
         Ok(ScanPage {
             items: items.into_iter().map(Into::into).collect(),
@@ -80,12 +73,14 @@ where
     T: Clone + Serialize + for<'de> Deserialize<'de> + Send + Sync + 'static,
 {
     async fn retry_failed(&self, id: &I) -> Result<(), Error> {
-        let ops = RedisStoreOps::new(self.pool.clone(), self.name.clone());
-        let stored: Option<StoredErroredInfo<I, T>> = ops.get_hash(&failed(&self.name), id).await?;
+        let stored: Option<StoredErroredInfo<I, T>> = self
+            .ops
+            .get_hash(&failed(self.ops.name()), id)
+            .await?;
         if let Some(info) = stored {
             let waiting = QueueInfo::new(info.id.clone(), info.data);
-            ops.insert_waiting(&waiting).await?;
-            ops.remove_failed(&info.id).await?;
+            self.ops.insert_waiting(&waiting).await?;
+            self.ops.remove_failed(&info.id).await?;
         }
         Ok(())
     }

@@ -15,8 +15,7 @@ use tokio::sync::watch;
 
 #[derive(Clone)]
 pub struct RedisMessageQueue<I, T> {
-    pub(crate) name: String,
-    pub(crate) pool: Pool,
+    pub(crate) ops: RedisStoreOps,
     pub(crate) config: MQConfig,
     pub(crate) consumer_id_generator: Arc<dyn Fn() -> String + Send + Sync + 'static>,
     pub(crate) _marker: PhantomData<fn() -> (I, T)>,
@@ -34,8 +33,7 @@ impl<I, T> RedisMessageQueue<I, T> {
         consumer_id_generator: Arc<dyn Fn() -> String + Send + Sync + 'static>,
     ) -> Self {
         Self {
-            name,
-            pool,
+            ops: RedisStoreOps::new(pool, name),
             config,
             consumer_id_generator,
             _marker: PhantomData,
@@ -49,8 +47,7 @@ where
     T: Serialize + Send + Sync + 'static,
 {
     async fn enqueue(&self, info: QueueInfo<I, T>) -> Result<(), Error> {
-        let store = RedisStoreOps::new(self.pool.clone(), self.name.clone());
-        store.insert_waiting(&info).await
+        self.ops.insert_waiting(&info).await
     }
 }
 
@@ -60,8 +57,7 @@ where
     T: Send + Sync + 'static,
 {
     async fn queued_len(&self) -> Result<u64, Error> {
-        let store = RedisStoreOps::new(self.pool.clone(), self.name.clone());
-        store.stream_len().await
+        self.ops.stream_len().await
     }
 }
 
@@ -76,8 +72,7 @@ where
         let mut handles = Vec::with_capacity(self.config.worker_count.get());
         for _ in 0..self.config.worker_count.get() {
             let store = RedisQueueStore::<I, T>::new(
-                self.pool.clone(),
-                self.name.clone(),
+                self.ops.clone(),
                 (self.consumer_id_generator)(),
                 self.config.retry_delay,
             );
