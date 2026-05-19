@@ -90,12 +90,11 @@ impl RedisStoreOps {
         let mut con = self.connection().await?;
         let result: Value = con.xlen(&self.name).await?;
         match result {
-            Value::Int(size) => u64::try_from(size).map_err(|e| Error::Protocol {
-                op: "XLEN",
-                detail: e.to_string(),
-            }),
-            other => Err(Error::protocol(
+            Value::Int(size) => u64::try_from(size)
+                .map_err(|e| Error::protocol_field("XLEN", "size", e.to_string())),
+            other => Err(Error::protocol_field(
                 "XLEN",
+                "reply",
                 format!("expected integer, got {other:?}"),
             )),
         }
@@ -105,12 +104,11 @@ impl RedisStoreOps {
         let mut con = self.connection().await?;
         let result: Value = con.hlen(key).await?;
         match result {
-            Value::Int(size) => u64::try_from(size).map_err(|e| Error::Protocol {
-                op: "HLEN",
-                detail: e.to_string(),
-            }),
-            other => Err(Error::protocol(
+            Value::Int(size) => u64::try_from(size)
+                .map_err(|e| Error::protocol_field("HLEN", "size", e.to_string())),
+            other => Err(Error::protocol_field(
                 "HLEN",
+                "reply",
                 format!("expected integer, got {other:?}"),
             )),
         }
@@ -127,8 +125,9 @@ impl RedisStoreOps {
                 .map(Some)
                 .map_err(|e| Error::Deserialize(Box::new(e))),
             Value::Nil => Ok(None),
-            other => Err(Error::protocol(
+            other => Err(Error::protocol_field(
                 "HGET",
+                "value",
                 format!("expected bulk string or nil, got {other:?}"),
             )),
         }
@@ -157,8 +156,9 @@ impl RedisStoreOps {
         let bulk = match result {
             Value::Array(bulk) => bulk,
             other => {
-                return Err(Error::protocol(
+                return Err(Error::protocol_field(
                     "HSCAN",
+                    "reply",
                     format!("expected array, got {other:?}"),
                 ))
             }
@@ -168,9 +168,10 @@ impl RedisStoreOps {
                 (std::str::from_utf8(next)?.to_string(), entries)
             }
             other => {
-                return Err(Error::protocol(
+                return Err(Error::protocol_field(
                     "HSCAN",
-                    format!("unexpected response shape: {other:?}"),
+                    "next_cursor",
+                    format!("expected [bulk-string, array], got {other:?}"),
                 ))
             }
         };
@@ -184,9 +185,10 @@ impl RedisStoreOps {
                     );
                 }
                 other => {
-                    return Err(Error::protocol(
+                    return Err(Error::protocol_field(
                         "HSCAN",
-                        format!("unexpected entry shape: {other:?}"),
+                        "entry",
+                        format!("expected [bulk-string id, bulk-string value], got {other:?}"),
                     ))
                 }
             }
@@ -265,8 +267,9 @@ where
         let bulk = match value {
             Value::Array(bulk) => bulk,
             other => {
-                return Err(Error::protocol(
+                return Err(Error::protocol_field(
                     "XPENDING",
+                    "reply",
                     format!("expected array, got {other:?}"),
                 ))
             }
@@ -277,9 +280,10 @@ where
         let entry = match bulk.as_slice() {
             [Value::Array(entry)] => entry,
             other => {
-                return Err(Error::protocol(
+                return Err(Error::protocol_field(
                     "XPENDING",
-                    format!("unexpected response shape: {other:?}"),
+                    "summary",
+                    format!("expected single-entry array, got {other:?}"),
                 ))
             }
         };
@@ -288,9 +292,10 @@ where
                 (std::str::from_utf8(id)?.to_string(), u32::try_from(*count)?)
             }
             other => {
-                return Err(Error::protocol(
+                return Err(Error::protocol_field(
                     "XPENDING",
-                    format!("unexpected entry shape: {other:?}"),
+                    "entry",
+                    format!("expected [id, owner, idle, count], got {other:?}"),
                 ))
             }
         };
@@ -425,8 +430,9 @@ where
         Value::Array(bulk) => bulk,
         Value::Nil => return Ok(None),
         other => {
-            return Err(Error::protocol(
+            return Err(Error::protocol_field(
                 op,
+                "reply",
                 format!("expected array or nil, got {other:?}"),
             ))
         }
@@ -435,18 +441,20 @@ where
         [Value::Array(streams)] => streams,
         [] => return Ok(None),
         other => {
-            return Err(Error::protocol(
+            return Err(Error::protocol_field(
                 op,
-                format!("unexpected response shape: {other:?}"),
+                "streams",
+                format!("expected single stream array, got {other:?}"),
             ))
         }
     };
     let entries = match streams.as_slice() {
         [Value::BulkString(_name), Value::Array(entries)] => entries,
         other => {
-            return Err(Error::protocol(
+            return Err(Error::protocol_field(
                 op,
-                format!("unexpected stream shape: {other:?}"),
+                "stream",
+                format!("expected [name, entries], got {other:?}"),
             ))
         }
     };
@@ -454,9 +462,10 @@ where
         [Value::Array(entry)] => entry,
         [] => return Ok(None),
         other => {
-            return Err(Error::protocol(
+            return Err(Error::protocol_field(
                 op,
-                format!("unexpected entries shape: {other:?}"),
+                "entries",
+                format!("expected single entry, got {other:?}"),
             ))
         }
     };
@@ -474,8 +483,9 @@ where
     let entries = match result {
         Value::Array(entries) => entries,
         other => {
-            return Err(Error::protocol(
+            return Err(Error::protocol_field(
                 "XCLAIM",
+                "reply",
                 format!("expected array, got {other:?}"),
             ))
         }
@@ -484,9 +494,10 @@ where
         [Value::Array(entry)] => entry,
         [] => return Ok(None),
         other => {
-            return Err(Error::protocol(
+            return Err(Error::protocol_field(
                 "XCLAIM",
-                format!("unexpected entries shape: {other:?}"),
+                "entries",
+                format!("expected single entry, got {other:?}"),
             ))
         }
     };
@@ -507,9 +518,10 @@ where
             (std::str::from_utf8(id)?.to_string(), fields)
         }
         other => {
-            return Err(Error::protocol(
+            return Err(Error::protocol_field(
                 op,
-                format!("unexpected entry shape: {other:?}"),
+                "entry",
+                format!("expected [stream_id, fields], got {other:?}"),
             ))
         }
     };
@@ -522,9 +534,10 @@ where
                 info,
             }))
         }
-        other => Err(Error::protocol(
+        other => Err(Error::protocol_field(
             op,
-            format!("unexpected fields shape: {other:?}"),
+            "fields",
+            format!("expected [field-name, payload], got {other:?}"),
         )),
     }
 }

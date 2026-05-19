@@ -28,11 +28,18 @@ pub enum Error {
 
     /// Protocol-level parse/validation failure.
     ///
-    /// This variant intentionally stores only the operation name and a textual
-    /// detail; source-chain preservation is reserved for I/O-level errors such
-    /// as [`Error::Pool`] and [`Error::Backend`].
-    #[error("protocol error during {op}: {detail}")]
-    Protocol { op: &'static str, detail: String },
+    /// Carries the wire-protocol `op` (e.g. `"XREAD"`), an optional `field`
+    /// pointing at the specific position in the response (e.g.
+    /// `"entry.stream_id"`), and a free-form `detail` describing the expected
+    /// shape and the actual value. Source-chain preservation is reserved for
+    /// I/O-level errors such as [`Error::Pool`] and [`Error::Backend`].
+    #[error("protocol error during {op}{}: {detail}",
+        .field.map(|f| format!(" ({f})")).unwrap_or_default())]
+    Protocol {
+        op: &'static str,
+        field: Option<&'static str>,
+        detail: String,
+    },
 
     #[error("worker join error: {0}")]
     Join(#[source] BoxedError),
@@ -45,6 +52,19 @@ impl Error {
     pub(crate) fn protocol(op: &'static str, detail: impl Into<String>) -> Self {
         Self::Protocol {
             op,
+            field: None,
+            detail: detail.into(),
+        }
+    }
+
+    pub(crate) fn protocol_field(
+        op: &'static str,
+        field: &'static str,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self::Protocol {
+            op,
+            field: Some(field),
             detail: detail.into(),
         }
     }
@@ -60,6 +80,7 @@ impl From<std::str::Utf8Error> for Error {
     fn from(err: std::str::Utf8Error) -> Self {
         Self::Protocol {
             op: "utf8",
+            field: None,
             detail: err.to_string(),
         }
     }
@@ -69,6 +90,7 @@ impl From<std::num::TryFromIntError> for Error {
     fn from(err: std::num::TryFromIntError) -> Self {
         Self::Protocol {
             op: "int conversion",
+            field: None,
             detail: err.to_string(),
         }
     }
@@ -92,5 +114,28 @@ impl From<deadpool_redis::redis::RedisError> for Error {
 impl From<deadpool_redis::CreatePoolError> for Error {
     fn from(err: deadpool_redis::CreatePoolError) -> Self {
         Self::Pool(Box::new(err))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_display_includes_field_when_present() {
+        let err = Error::protocol_field("XREAD", "entry.stream_id", "expected bulk string, got Nil");
+        assert_eq!(
+            err.to_string(),
+            "protocol error during XREAD (entry.stream_id): expected bulk string, got Nil",
+        );
+    }
+
+    #[test]
+    fn protocol_display_omits_field_when_absent() {
+        let err = Error::protocol("XLEN", "expected integer, got Nil");
+        assert_eq!(
+            err.to_string(),
+            "protocol error during XLEN: expected integer, got Nil",
+        );
     }
 }
