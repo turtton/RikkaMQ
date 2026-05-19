@@ -132,3 +132,9 @@ podman run --rm --name rikka-mq -p 6379:6379 docker.io/eqalpha/keydb
 `tests/worker_shutdown.rs` uses `testcontainers` and is marked `#[ignore]`;
 run it with `cargo test --test worker_shutdown --all-features -- --ignored`
 when Docker is available.
+
+## Benchmarks
+
+Criterion benchmarks live under `benches/`. See `benches/README.md` for the
+Redis enqueue starvation benchmark, its `--all-features` invocation, Docker
+requirement, and baseline notes.
