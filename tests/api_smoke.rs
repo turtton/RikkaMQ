@@ -28,6 +28,7 @@ fn _compile_only() -> Result<(), rikka_mq::error::Error> {
     let pool = config.create_pool(Some(Runtime::Tokio1))?;
     let queue = RedisMessageQueue::<Uuid, MyData>::builder()
         .pool(pool)
+        .redis_url("redis://127.0.0.1:6379")
         .name("compile-only")
         .config(MQConfig::default())
         .consumer_id_generator(|| format!("consumer-{}", Uuid::new_v4()))

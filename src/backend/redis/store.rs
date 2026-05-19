@@ -3,7 +3,8 @@ use crate::error::Error;
 use crate::info::{ErroredInfo, QueueInfo, StoredErroredInfo};
 use crate::worker::{ClaimedMessage, QueueStore};
 use deadpool_redis::redis::streams::StreamReadOptions;
-use deadpool_redis::redis::{cmd, AsyncCommands, Value};
+use deadpool_redis::redis::aio::MultiplexedConnection;
+use deadpool_redis::redis::{cmd, AsyncCommands, Client, Value};
 use deadpool_redis::{Connection, Pool};
 use serde::{Deserialize, Serialize};
 use std::error::Error as StdError;
@@ -16,6 +17,7 @@ use std::time::Duration;
 #[derive(Clone)]
 pub(crate) struct RedisStoreOps {
     pool: Pool,
+    blocking_client: Client,
     name: String,
     /// Tracks whether the consumer group has been ensured on Redis for
     /// this process; ensures `XGROUP CREATE MKSTREAM` runs at most once
@@ -24,9 +26,10 @@ pub(crate) struct RedisStoreOps {
 }
 
 impl RedisStoreOps {
-    pub(crate) fn new(pool: Pool, name: String) -> Self {
+    pub(crate) fn new(pool: Pool, blocking_client: Client, name: String) -> Self {
         Self {
             pool,
+            blocking_client,
             name,
             group_initialized: Arc::new(tokio::sync::OnceCell::new()),
         }
@@ -34,6 +37,10 @@ impl RedisStoreOps {
 
     async fn connection(&self) -> Result<Connection, Error> {
         Ok(self.pool.get().await?)
+    }
+
+    pub(crate) async fn blocking_connection(&self) -> Result<MultiplexedConnection, Error> {
+        Ok(self.blocking_client.get_multiplexed_async_connection().await?)
     }
 
     pub(crate) fn name(&self) -> &str {
@@ -194,18 +201,24 @@ impl RedisStoreOps {
     }
 }
 
-#[derive(Clone)]
 pub(crate) struct RedisQueueStore<I, T> {
     ops: RedisStoreOps,
+    blocking_connection: tokio::sync::Mutex<MultiplexedConnection>,
     consumer_id: String,
     retry_delay: Duration,
     _marker: PhantomData<fn() -> (I, T)>,
 }
 
 impl<I, T> RedisQueueStore<I, T> {
-    pub(crate) fn new(ops: RedisStoreOps, consumer_id: String, retry_delay: Duration) -> Self {
+    pub(crate) fn new(
+        ops: RedisStoreOps,
+        blocking_connection: MultiplexedConnection,
+        consumer_id: String,
+        retry_delay: Duration,
+    ) -> Self {
         Self {
             ops,
+            blocking_connection: tokio::sync::Mutex::new(blocking_connection),
             consumer_id,
             retry_delay,
             _marker: PhantomData,
@@ -220,7 +233,7 @@ where
 {
     async fn pop_to_process(
         &self,
-        con: &mut Connection,
+        con: &mut MultiplexedConnection,
     ) -> Result<Option<ClaimedMessage<I, T>>, Error> {
         let options = StreamReadOptions::default()
             .block(1000)
@@ -359,7 +372,11 @@ where
             let mut con = self.ops.connection().await?;
             match self.pop_pending(&mut con).await? {
                 Some(claimed) => Ok(Some(claimed)),
-                None => self.pop_to_process(&mut con).await,
+                None => {
+                    drop(con);
+                    let mut blocking_connection = self.blocking_connection.lock().await;
+                    self.pop_to_process(&mut blocking_connection).await
+                }
             }
         })
     }

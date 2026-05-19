@@ -37,11 +37,13 @@ async fn worker_shutdown_joins_within_five_seconds() -> Result<(), Error> {
         .get_host_port_ipv4(6379)
         .await
         .map_err(|e| Error::Backend(Box::new(e)))?;
-    let cfg = Config::from_url(format!("redis://127.0.0.1:{host_port}"));
+    let redis_url = format!("redis://127.0.0.1:{host_port}");
+    let cfg = Config::from_url(redis_url.clone());
     let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
     wait_for_redis(&pool).await?;
     let mq = RedisMessageQueue::<Uuid, Payload>::builder()
         .pool(pool)
+        .redis_url(redis_url)
         .name(format!("worker_shutdown_{}", Uuid::new_v4()))
         .config(MQConfig {
             worker_count: NonZeroUsize::new(2).expect("test worker_count is non-zero"),

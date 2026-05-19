@@ -75,11 +75,12 @@ async fn main() -> Result<(), rikka_mq::error::Error> {
         .with(tracing_subscriber::fmt::layer())
         .init();
     let url = dotenvy::var("REDIS_URL").unwrap();
-    let cfg = Config::from_url(url);
+    let cfg = Config::from_url(url.clone());
     let redis_pool = cfg.create_pool(Some(Runtime::Tokio1))?;
     let module = Arc::new(Module { pool: redis_pool.clone() });
     let mq = RedisMessageQueue::<Uuid, QueueData>::builder()
         .pool(redis_pool)
+        .redis_url(url)
         .name("mq_name")
         .config(MQConfig::default())
         .consumer_id_generator(|| format!("consumer-{}", Uuid::new_v4()))
@@ -112,6 +113,13 @@ async fn main() -> Result<(), rikka_mq::error::Error> {
     Ok(())
 }
 ```
+
+The Redis worker path uses the pool for non-blocking commands such as `XADD`,
+`XACK`, `XDEL`, `HSCAN`, `XCLAIM`, and retry metadata updates, while each worker
+opens one independent connection from `redis_url` for `XREAD BLOCK`. `pool` and
+`redis_url` must point to the same Redis deployment/database. This explicit URL
+keeps blocking reads out of the deadpool pool, so enqueue and maintenance
+operations do not starve when the worker count matches the pool size.
 
 # Development notes
 

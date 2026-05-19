@@ -6,6 +6,7 @@ use crate::handler::HandlerFn;
 use crate::info::QueueInfo;
 use crate::mq::{MessageQueue, QueueStats};
 use crate::worker::{run_worker, WorkerControl, WorkerSet};
+use deadpool_redis::redis::Client;
 use deadpool_redis::Pool;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
@@ -28,12 +29,13 @@ impl<I, T> RedisMessageQueue<I, T> {
 
     pub(crate) fn from_parts(
         pool: Pool,
+        blocking_client: Client,
         name: String,
         config: MQConfig,
         consumer_id_generator: Arc<dyn Fn() -> String + Send + Sync + 'static>,
     ) -> Self {
         Self {
-            ops: RedisStoreOps::new(pool, name),
+            ops: RedisStoreOps::new(pool, blocking_client, name),
             config,
             consumer_id_generator,
             _marker: PhantomData,
@@ -69,10 +71,16 @@ where
 {
     async fn start_workers(&self, module: M, handler: HandlerFn<M, T>) -> Result<WorkerSet, Error> {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let mut handles = Vec::with_capacity(self.config.worker_count.get());
-        for _ in 0..self.config.worker_count.get() {
+        let worker_count = self.config.worker_count.get();
+        let mut blocking_connections = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            blocking_connections.push(self.ops.blocking_connection().await?);
+        }
+        let mut handles = Vec::with_capacity(worker_count);
+        for blocking_connection in blocking_connections {
             let store = RedisQueueStore::<I, T>::new(
                 self.ops.clone(),
+                blocking_connection,
                 (self.consumer_id_generator)(),
                 self.config.retry_delay,
             );
