@@ -82,7 +82,7 @@ where
                 self.ops.clone(),
                 blocking_connection,
                 (self.consumer_id_generator)(),
-                self.config.retry_delay,
+                self.config.retry_policy.clone(),
             );
             let module = module.clone();
             let handler = handler.clone();

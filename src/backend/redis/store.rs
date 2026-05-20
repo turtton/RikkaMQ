@@ -1,4 +1,5 @@
 use super::keys::{delayed, failed, group, QUEUE_FIELD};
+use crate::config::RetryPolicy;
 use crate::error::Error;
 use crate::info::{ErroredInfo, QueueInfo, StoredErroredInfo};
 use crate::worker::{ClaimedMessage, QueueStore};
@@ -12,7 +13,6 @@ use std::fmt::Display;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 
 #[derive(Clone)]
 pub(crate) struct RedisStoreOps {
@@ -207,7 +207,7 @@ pub(crate) struct RedisQueueStore<I, T> {
     ops: RedisStoreOps,
     blocking_connection: tokio::sync::Mutex<MultiplexedConnection>,
     consumer_id: String,
-    retry_delay: Duration,
+    retry_policy: RetryPolicy,
     _marker: PhantomData<fn() -> (I, T)>,
 }
 
@@ -216,15 +216,19 @@ impl<I, T> RedisQueueStore<I, T> {
         ops: RedisStoreOps,
         blocking_connection: MultiplexedConnection,
         consumer_id: String,
-        retry_delay: Duration,
+        retry_policy: RetryPolicy,
     ) -> Self {
         Self {
             ops,
             blocking_connection: tokio::sync::Mutex::new(blocking_connection),
             consumer_id,
-            retry_delay,
+            retry_policy,
             _marker: PhantomData,
         }
+    }
+
+    pub(crate) fn retry_policy(&self) -> &RetryPolicy {
+        &self.retry_policy
     }
 }
 
@@ -252,7 +256,7 @@ where
         con: &mut Connection,
     ) -> Result<Option<ClaimedMessage<I, T>>, Error> {
         self.ops.ensure_group(con).await?;
-        let time_millis = u64::try_from(self.retry_delay.as_millis())?;
+        let time_millis = u64::try_from(self.retry_policy.min_delay().as_millis())?;
         let group_name = group(&self.ops.name);
         let value: Value = cmd("XPENDING")
             .arg(&self.ops.name)
@@ -414,6 +418,10 @@ where
         id: &'a I,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + 'a>> {
         Box::pin(async move { self.remove_delayed_inner(id).await })
+    }
+
+    fn retry_delay_for(&self, delivered_count: u32) -> std::time::Duration {
+        self.retry_policy().delay_for(delivered_count)
     }
 }
 

@@ -5,8 +5,10 @@ use crate::info::QueueInfo;
 use std::error::Error as StdError;
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 pub(crate) type StoreFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send + 'a>>;
 
@@ -94,6 +96,9 @@ pub(crate) trait QueueStore<I, T>: Send + Sync {
         error: Box<dyn StdError + Send + Sync + 'static>,
     ) -> StoreFuture<'a, ()>;
     fn remove_delayed<'a>(&'a self, id: &'a I) -> StoreFuture<'a, ()>;
+    fn retry_delay_for(&self, _delivered_count: u32) -> Duration {
+        Duration::ZERO
+    }
 }
 
 pub(crate) async fn run_worker<M, I, T, S>(
@@ -127,6 +132,7 @@ where
         };
         let info_id = claimed.info.id().clone();
         let data = claimed.info.data().clone();
+        let handler_started_at = Instant::now();
         match handler(module.clone(), data).await {
             Ok(()) => {
                 store.ack(&claimed.stream_id).await?;
@@ -135,6 +141,18 @@ where
                 }
             }
             Err(ErrorOperation::Delay(error)) if claimed.delivered_count < config.max_retry => {
+                let retry_at = handler_started_at + store.retry_delay_for(claimed.delivered_count);
+                if retry_at > Instant::now() {
+                    let should_exit = tokio::select! {
+                        changed = shutdown_rx.changed() => {
+                            changed.is_err() || *shutdown_rx.borrow()
+                        }
+                        () = tokio::time::sleep_until(retry_at) => false,
+                    };
+                    if should_exit {
+                        break;
+                    }
+                }
                 store.record_delayed(claimed.info, error).await?;
                 store.ack(&claimed.stream_id).await?;
             }
@@ -154,7 +172,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::{run_worker, ClaimedMessage, QueueStore, StoreFuture, WorkerSet};
-    use crate::config::MQConfig;
+    use crate::config::{MQConfig, RetryPolicy};
     use crate::error::{Error, ErrorOperation};
     use crate::handler::{into_handler, HandlerFn};
     use crate::info::QueueInfo;
@@ -162,7 +180,8 @@ mod tests {
     use std::error::Error as StdError;
     use std::num::NonZeroUsize;
     use std::sync::{Arc, Mutex};
-    use tokio::sync::watch;
+    use std::time::Duration;
+    use tokio::sync::{oneshot, watch};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum Event {
@@ -173,12 +192,25 @@ mod tests {
         RemoveDelayed(u64),
     }
 
-    #[derive(Clone, Default)]
+    #[derive(Clone)]
     struct MemoryStore {
         claims: Arc<Mutex<VecDeque<ClaimedMessage<u64, String>>>>,
         events: Arc<Mutex<Vec<Event>>>,
+        retry_policy: RetryPolicy,
         fail_record_delayed: bool,
         fail_record_failed: bool,
+    }
+
+    impl Default for MemoryStore {
+        fn default() -> Self {
+            Self {
+                claims: Arc::default(),
+                events: Arc::default(),
+                retry_policy: RetryPolicy::Fixed(Duration::ZERO),
+                fail_record_delayed: false,
+                fail_record_failed: false,
+            }
+        }
     }
 
     impl MemoryStore {
@@ -201,6 +233,11 @@ mod tests {
                 .lock()
                 .expect("test mutex should not be poisoned")
                 .clone()
+        }
+
+        fn with_retry_policy(mut self, retry_policy: RetryPolicy) -> Self {
+            self.retry_policy = retry_policy;
+            self
         }
     }
 
@@ -270,6 +307,10 @@ mod tests {
                     .push(Event::RemoveDelayed(*id));
                 Ok(())
             })
+        }
+
+        fn retry_delay_for(&self, delivered_count: u32) -> Duration {
+            self.retry_policy.delay_for(delivered_count)
         }
     }
 
@@ -342,6 +383,130 @@ mod tests {
                 Event::Ack("stream-1".into())
             ]
         );
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn exponential_delay_waits_before_record_delayed_and_ack() -> Result<(), Error> {
+        let store = MemoryStore::with_claim(2).with_retry_policy(RetryPolicy::Exponential {
+            initial: Duration::from_millis(100),
+            factor: 2.0,
+            max: Duration::from_secs(10),
+        });
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (handler_done_tx, handler_done_rx) = oneshot::channel();
+        let handler_done_tx = Arc::new(Mutex::new(Some(handler_done_tx)));
+        let handle = tokio::spawn(run_worker(
+            (),
+            into_handler(move |(), _| {
+                let handler_done_tx = handler_done_tx.clone();
+                async move {
+                    match handler_done_tx.lock() {
+                        Ok(mut sender) => {
+                            if let Some(sender) = sender.take() {
+                                let _ = sender.send(());
+                            }
+                        }
+                        Err(err) => return Err(ErrorOperation::Fail(Box::new(std::io::Error::other(err.to_string())))),
+                    }
+                    Err(ErrorOperation::Delay(Box::new(SimpleError("delay"))))
+                }
+            }),
+            store.clone(),
+            test_config(),
+            shutdown_rx,
+        ));
+        handler_done_rx
+            .await
+            .map_err(|e| Error::Backend(Box::new(e)))?;
+        tokio::task::yield_now().await;
+
+        assert_eq!(store.events(), vec![Event::Claim("stream-1".into())]);
+        tokio::time::advance(Duration::from_millis(199)).await;
+        assert_eq!(store.events(), vec![Event::Claim("stream-1".into())]);
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            store.events(),
+            vec![
+                Event::Claim("stream-1".into()),
+                Event::RecordDelayed(42),
+                Event::Ack("stream-1".into())
+            ]
+        );
+
+        shutdown_tx
+            .send(true)
+            .map_err(|e| Error::Shutdown(Box::new(e)))?;
+        handle.await.map_err(|e| Error::Join(Box::new(e)))??;
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ok_and_fail_do_not_backoff_sleep() -> Result<(), Error> {
+        let policy = RetryPolicy::Exponential {
+            initial: Duration::from_secs(10),
+            factor: 2.0,
+            max: Duration::from_secs(60),
+        };
+
+        let ok_store = MemoryStore::with_claim(1).with_retry_policy(policy.clone());
+        run_until_first_idle(ok_store.clone(), into_handler(|(), _| async { Ok(()) })).await?;
+        assert_eq!(
+            ok_store.events(),
+            vec![
+                Event::Claim("stream-1".into()),
+                Event::Ack("stream-1".into()),
+                Event::RemoveDelayed(42)
+            ]
+        );
+
+        let fail_store = MemoryStore::with_claim(1).with_retry_policy(policy);
+        run_until_first_idle(
+            fail_store.clone(),
+            into_handler(|(), _| async { Err(ErrorOperation::Fail(Box::new(SimpleError("fail")))) }),
+        )
+        .await?;
+        assert_eq!(
+            fail_store.events(),
+            vec![
+                Event::Claim("stream-1".into()),
+                Event::RecordFailed(42),
+                Event::Ack("stream-1".into())
+            ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shutdown_preempts_backoff_sleep() -> Result<(), Error> {
+        let store = MemoryStore::with_claim(1).with_retry_policy(RetryPolicy::Exponential {
+            initial: Duration::from_secs(10),
+            factor: 2.0,
+            max: Duration::from_secs(60),
+        });
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = tokio::spawn(run_worker(
+            (),
+            into_handler(|(), _| async { Err(ErrorOperation::Delay(Box::new(SimpleError("delay")))) }),
+            store.clone(),
+            test_config(),
+            shutdown_rx,
+        ));
+        tokio::time::sleep(Duration::from_millis(25)).await;
+
+        let started = std::time::Instant::now();
+        shutdown_tx
+            .send(true)
+            .map_err(|e| Error::Shutdown(Box::new(e)))?;
+        tokio::time::timeout(Duration::from_millis(500), handle)
+            .await
+            .map_err(|e| Error::Shutdown(Box::new(e)))?
+            .map_err(|e| Error::Join(Box::new(e)))??;
+
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert_eq!(store.events(), vec![Event::Claim("stream-1".into())]);
         Ok(())
     }
 
@@ -479,11 +644,24 @@ mod tests {
         handle.await.map_err(|e| Error::Join(Box::new(e)))?
     }
 
+    async fn run_until_first_idle(
+        handler_store: MemoryStore,
+        handler: HandlerFn<(), String>,
+    ) -> Result<(), Error> {
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = tokio::spawn(run_worker((), handler, handler_store, test_config(), shutdown_rx));
+        tokio::task::yield_now().await;
+        shutdown_tx
+            .send(true)
+            .map_err(|e| Error::Shutdown(Box::new(e)))?;
+        handle.await.map_err(|e| Error::Join(Box::new(e)))?
+    }
+
     fn test_config() -> MQConfig {
         MQConfig {
             worker_count: NonZeroUsize::new(1).expect("test worker_count is non-zero"),
             max_retry: 3,
-            retry_delay: std::time::Duration::from_millis(1),
+            retry_policy: RetryPolicy::Fixed(std::time::Duration::from_millis(1)),
         }
     }
 

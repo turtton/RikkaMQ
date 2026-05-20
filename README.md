@@ -9,7 +9,7 @@ A handler can return `Ok(())`, `Err(ErrorOperation::Delay(_))`, or
 
 - `Ok(())` acknowledges the message.
 - `Delay` keeps the message in the consumer group's pending list. After
-  `MQConfig::retry_delay` has elapsed it is re-delivered to a worker. The
+  `MQConfig::retry_policy.min_delay()` has elapsed it is re-delivered to a worker. The
   handler runs at most `max_retry + 1` times in total (one initial attempt
   plus up to `max_retry` re-deliveries). Once that budget is exceeded the
   message is moved to the failed hash.
@@ -42,7 +42,7 @@ rikka-mq = { version = "0.2.0-alpha.1", features = ["redis", "tracing"] }
 ```rust
 use deadpool_redis::{Config, Pool, Runtime};
 use rikka_mq::backend::redis::RedisMessageQueue;
-use rikka_mq::config::MQConfig;
+use rikka_mq::config::{MQConfig, RetryPolicy};
 use rikka_mq::error::ErrorOperation;
 use rikka_mq::handler::into_handler;
 use rikka_mq::info::QueueInfo;
@@ -50,6 +50,7 @@ use rikka_mq::mq::MessageQueue;
 use rikka_mq::worker::WorkerControl;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::info;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -82,7 +83,10 @@ async fn main() -> Result<(), rikka_mq::error::Error> {
         .pool(redis_pool)
         .redis_url(url)
         .name("mq_name")
-        .config(MQConfig::default())
+        .config(MQConfig {
+            retry_policy: RetryPolicy::Fixed(Duration::from_secs(180)),
+            ..MQConfig::default()
+        })
         .consumer_id_generator(|| format!("consumer-{}", Uuid::new_v4()))
         .build()?;
 
@@ -113,6 +117,8 @@ async fn main() -> Result<(), rikka_mq::error::Error> {
     Ok(())
 }
 ```
+
+`RetryPolicy::Exponential { initial, factor, max }` is also available when retry intervals should grow between attempts.
 
 The Redis worker path uses the pool for non-blocking commands such as `XADD`,
 `XACK`, `XDEL`, `HSCAN`, `XCLAIM`, and retry metadata updates, while each worker

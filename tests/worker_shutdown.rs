@@ -3,7 +3,7 @@
 use deadpool_redis::redis::cmd;
 use deadpool_redis::{Config, Runtime};
 use rikka_mq::backend::redis::RedisMessageQueue;
-use rikka_mq::config::MQConfig;
+use rikka_mq::config::{MQConfig, RetryPolicy};
 use rikka_mq::error::Error;
 use rikka_mq::handler::into_handler;
 use rikka_mq::info::QueueInfo;
@@ -48,7 +48,7 @@ async fn worker_shutdown_joins_within_five_seconds() -> Result<(), Error> {
         .config(MQConfig {
             worker_count: NonZeroUsize::new(2).expect("test worker_count is non-zero"),
             max_retry: 0,
-            retry_delay: Duration::from_millis(10),
+            retry_policy: RetryPolicy::Fixed(Duration::from_millis(10)),
         })
         .consumer_id_generator(|| format!("consumer-{}", Uuid::new_v4()))
         .build()?;

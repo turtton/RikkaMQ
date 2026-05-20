@@ -21,7 +21,7 @@ mod bench {
     use deadpool_redis::redis::cmd;
     use deadpool_redis::{Config, Pool, PoolConfig, Runtime};
     use rikka_mq::backend::redis::RedisMessageQueue;
-    use rikka_mq::config::MQConfig;
+    use rikka_mq::config::{MQConfig, RetryPolicy};
     use rikka_mq::error::Error;
     use rikka_mq::handler::into_handler;
     use rikka_mq::info::QueueInfo;
@@ -96,7 +96,7 @@ mod bench {
                     worker_count: NonZeroUsize::new(WORKER_COUNT)
                         .expect("bench worker_count is non-zero"),
                     max_retry: 0,
-                    retry_delay: Duration::from_secs(1),
+                    retry_policy: RetryPolicy::Fixed(Duration::from_secs(1)),
                 })
                 .consumer_id_generator(|| Uuid::new_v4().to_string())
                 .build()?;
