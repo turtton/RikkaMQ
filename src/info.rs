@@ -77,7 +77,7 @@ impl<I: Clone, D: Clone> Clone for ErroredInfo<I, D> {
 }
 
 #[derive(Debug, Clone)]
-pub struct StringError(pub String);
+pub(crate) struct StringError(pub String);
 
 impl Display for StringError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
