@@ -181,10 +181,11 @@ mod tests {
     use std::num::NonZeroUsize;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
-    use tokio::sync::{oneshot, watch};
+    use tokio::sync::{oneshot, watch, Notify};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum Event {
+        ClaimNextError,
         Claim(String),
         Ack(String),
         RecordDelayed(u64),
@@ -194,21 +195,41 @@ mod tests {
 
     #[derive(Clone)]
     struct MemoryStore {
-        claims: Arc<Mutex<VecDeque<ClaimedMessage<u64, String>>>>,
-        events: Arc<Mutex<Vec<Event>>>,
+        state: Arc<Mutex<MemoryStoreState>>,
         retry_policy: RetryPolicy,
-        fail_record_delayed: bool,
-        fail_record_failed: bool,
+    }
+
+    #[derive(Default)]
+    struct MemoryStoreState {
+        claims: VecDeque<ClaimedMessage<u64, String>>,
+        events: Vec<Event>,
+        script: ErrorScript,
+        counts: CallCounts,
+    }
+
+    #[derive(Default)]
+    struct ErrorScript {
+        claim_next: Vec<usize>,
+        ack: Vec<usize>,
+        record_delayed: Vec<usize>,
+        record_failed: Vec<usize>,
+        remove_delayed: Vec<usize>,
+    }
+
+    #[derive(Default)]
+    struct CallCounts {
+        claim_next: usize,
+        ack: usize,
+        record_delayed: usize,
+        record_failed: usize,
+        remove_delayed: usize,
     }
 
     impl Default for MemoryStore {
         fn default() -> Self {
             Self {
-                claims: Arc::default(),
-                events: Arc::default(),
+                state: Arc::default(),
                 retry_policy: RetryPolicy::Fixed(Duration::ZERO),
-                fail_record_delayed: false,
-                fail_record_failed: false,
             }
         }
     }
@@ -217,9 +238,10 @@ mod tests {
         fn with_claim(delivered_count: u32) -> Self {
             let store = Self::default();
             store
-                .claims
+                .state
                 .lock()
                 .expect("test mutex should not be poisoned")
+                .claims
                 .push_back(ClaimedMessage {
                     stream_id: "stream-1".to_string(),
                     delivered_count,
@@ -229,9 +251,10 @@ mod tests {
         }
 
         fn events(&self) -> Vec<Event> {
-            self.events
+            self.state
                 .lock()
                 .expect("test mutex should not be poisoned")
+                .events
                 .clone()
         }
 
@@ -239,17 +262,72 @@ mod tests {
             self.retry_policy = retry_policy;
             self
         }
+
+        fn fail_claim_next_on(self, call: usize) -> Self {
+            self.state
+                .lock()
+                .expect("test mutex should not be poisoned")
+                .script
+                .claim_next
+                .push(call);
+            self
+        }
+
+        #[allow(dead_code)]
+        fn fail_ack_on(self, call: usize) -> Self {
+            self.state
+                .lock()
+                .expect("test mutex should not be poisoned")
+                .script
+                .ack
+                .push(call);
+            self
+        }
+
+        fn fail_record_delayed_on(self, call: usize) -> Self {
+            self.state
+                .lock()
+                .expect("test mutex should not be poisoned")
+                .script
+                .record_delayed
+                .push(call);
+            self
+        }
+
+        fn fail_record_failed_on(self, call: usize) -> Self {
+            self.state
+                .lock()
+                .expect("test mutex should not be poisoned")
+                .script
+                .record_failed
+                .push(call);
+            self
+        }
+
+        fn fail_remove_delayed_on(self, call: usize) -> Self {
+            self.state
+                .lock()
+                .expect("test mutex should not be poisoned")
+                .script
+                .remove_delayed
+                .push(call);
+            self
+        }
     }
 
     impl QueueStore<u64, String> for MemoryStore {
         fn claim_next<'a>(&'a self) -> StoreFuture<'a, Option<ClaimedMessage<u64, String>>> {
             Box::pin(async move {
-                let claim = self.claims.lock().map_err(lock_error)?.pop_front();
+                let mut state = self.state.lock().map_err(lock_error)?;
+                state.counts.claim_next += 1;
+                let call = state.counts.claim_next;
+                if state.script.claim_next.contains(&call) {
+                    state.events.push(Event::ClaimNextError);
+                    return Err(Error::Backend(Box::new(SimpleError("claim next"))));
+                }
+                let claim = state.claims.pop_front();
                 if let Some(claim) = &claim {
-                    self.events
-                        .lock()
-                        .map_err(lock_error)?
-                        .push(Event::Claim(claim.stream_id.clone()));
+                    state.events.push(Event::Claim(claim.stream_id.clone()));
                 }
                 Ok(claim)
             })
@@ -257,10 +335,13 @@ mod tests {
 
         fn ack<'a>(&'a self, stream_id: &'a str) -> StoreFuture<'a, ()> {
             Box::pin(async move {
-                self.events
-                    .lock()
-                    .map_err(lock_error)?
-                    .push(Event::Ack(stream_id.to_string()));
+                let mut state = self.state.lock().map_err(lock_error)?;
+                state.counts.ack += 1;
+                let call = state.counts.ack;
+                state.events.push(Event::Ack(stream_id.to_string()));
+                if state.script.ack.contains(&call) {
+                    return Err(Error::Backend(Box::new(SimpleError("ack"))));
+                }
                 Ok(())
             })
         }
@@ -271,11 +352,11 @@ mod tests {
             _error: Box<dyn StdError + Send + Sync + 'static>,
         ) -> StoreFuture<'a, ()> {
             Box::pin(async move {
-                self.events
-                    .lock()
-                    .map_err(lock_error)?
-                    .push(Event::RecordDelayed(*info.id()));
-                if self.fail_record_delayed {
+                let mut state = self.state.lock().map_err(lock_error)?;
+                state.counts.record_delayed += 1;
+                let call = state.counts.record_delayed;
+                state.events.push(Event::RecordDelayed(*info.id()));
+                if state.script.record_delayed.contains(&call) {
                     return Err(Error::Backend(Box::new(SimpleError("record delayed"))));
                 }
                 Ok(())
@@ -288,11 +369,11 @@ mod tests {
             _error: Box<dyn StdError + Send + Sync + 'static>,
         ) -> StoreFuture<'a, ()> {
             Box::pin(async move {
-                self.events
-                    .lock()
-                    .map_err(lock_error)?
-                    .push(Event::RecordFailed(*info.id()));
-                if self.fail_record_failed {
+                let mut state = self.state.lock().map_err(lock_error)?;
+                state.counts.record_failed += 1;
+                let call = state.counts.record_failed;
+                state.events.push(Event::RecordFailed(*info.id()));
+                if state.script.record_failed.contains(&call) {
                     return Err(Error::Backend(Box::new(SimpleError("record failed"))));
                 }
                 Ok(())
@@ -301,10 +382,13 @@ mod tests {
 
         fn remove_delayed<'a>(&'a self, id: &'a u64) -> StoreFuture<'a, ()> {
             Box::pin(async move {
-                self.events
-                    .lock()
-                    .map_err(lock_error)?
-                    .push(Event::RemoveDelayed(*id));
+                let mut state = self.state.lock().map_err(lock_error)?;
+                state.counts.remove_delayed += 1;
+                let call = state.counts.remove_delayed;
+                state.events.push(Event::RemoveDelayed(*id));
+                if state.script.remove_delayed.contains(&call) {
+                    return Err(Error::Backend(Box::new(SimpleError("remove delayed"))));
+                }
                 Ok(())
             })
         }
@@ -512,10 +596,7 @@ mod tests {
 
     #[tokio::test]
     async fn record_failed_error_skips_ack() {
-        let store = MemoryStore {
-            fail_record_failed: true,
-            ..MemoryStore::with_claim(3)
-        };
+        let store = MemoryStore::with_claim(3).fail_record_failed_on(1);
         let result = run_once(
             store.clone(),
             into_handler(|(), _| async { Err(ErrorOperation::Delay(Box::new(SimpleError("delay")))) }),
@@ -530,10 +611,7 @@ mod tests {
 
     #[tokio::test]
     async fn record_delayed_error_skips_ack() {
-        let store = MemoryStore {
-            fail_record_delayed: true,
-            ..MemoryStore::with_claim(2)
-        };
+        let store = MemoryStore::with_claim(2).fail_record_delayed_on(1);
         let result = run_once(
             store.clone(),
             into_handler(|(), _| async { Err(ErrorOperation::Delay(Box::new(SimpleError("delay")))) }),
@@ -544,6 +622,88 @@ mod tests {
             store.events(),
             vec![Event::Claim("stream-1".into()), Event::RecordDelayed(42)]
         );
+    }
+
+    #[tokio::test]
+    async fn fail_record_failed_error_skips_ack() {
+        let store = MemoryStore::with_claim(0).fail_record_failed_on(1);
+        let result = run_once(
+            store.clone(),
+            into_handler(|(), _| async { Err(ErrorOperation::Fail(Box::new(SimpleError("fail")))) }),
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(
+            store.events(),
+            vec![Event::Claim("stream-1".into()), Event::RecordFailed(42)]
+        );
+    }
+
+    /// The Ok path acknowledges before delayed-hash cleanup because the handler
+    /// has already succeeded; a cleanup failure should surface to the caller,
+    /// but it cannot retroactively make the acknowledged stream entry pending.
+    #[tokio::test]
+    async fn remove_delayed_error_after_ok_keeps_prior_ack() {
+        let store = MemoryStore::with_claim(1).fail_remove_delayed_on(1);
+        let result = run_once(store.clone(), into_handler(|(), _| async { Ok(()) })).await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            store.events(),
+            vec![
+                Event::Claim("stream-1".into()),
+                Event::Ack("stream-1".into()),
+                Event::RemoveDelayed(42)
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_during_handler_in_flight_drains_cleanly() -> Result<(), Error> {
+        let store = MemoryStore::with_claim(0);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handler_started = Arc::new(Notify::new());
+        let handler_continue = Arc::new(Notify::new());
+        let handler_started_for_closure = handler_started.clone();
+        let handler_continue_for_closure = handler_continue.clone();
+        let handle = tokio::spawn(run_worker(
+            (),
+            into_handler(move |(), _| {
+                let handler_started = handler_started_for_closure.clone();
+                let handler_continue = handler_continue_for_closure.clone();
+                async move {
+                    handler_started.notify_one();
+                    handler_continue.notified().await;
+                    Ok(())
+                }
+            }),
+            store.clone(),
+            test_config(),
+            shutdown_rx,
+        ));
+
+        handler_started.notified().await;
+        assert_eq!(store.events(), vec![Event::Claim("stream-1".into())]);
+        shutdown_tx
+            .send(true)
+            .map_err(|e| Error::Shutdown(Box::new(e)))?;
+        handler_continue.notify_one();
+
+        handle.await.map_err(|e| Error::Join(Box::new(e)))??;
+        assert_eq!(
+            store.events(),
+            vec![Event::Claim("stream-1".into()), Event::Ack("stream-1".into())]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn claim_next_error_exits_worker_without_ack() {
+        let store = MemoryStore::with_claim(0).fail_claim_next_on(1);
+        let result = run_until_first_idle(store.clone(), into_handler(|(), _| async { Ok(()) })).await;
+
+        assert!(result.is_err());
+        assert_eq!(store.events(), vec![Event::ClaimNextError]);
     }
 
     #[tokio::test]
