@@ -8,16 +8,15 @@ A handler can return `Ok(())`, `Err(ErrorOperation::Delay(_))`, or
 `Err(ErrorOperation::Fail(_))`.
 
 - `Ok(())` acknowledges the message.
-- `Delay` keeps the message in the consumer group's pending list. After
-  `MQConfig::retry_policy.min_delay()` has elapsed it is re-delivered to a worker. The
-  handler runs at most `max_retry + 1` times in total (one initial attempt
-  plus up to `max_retry` re-deliveries). Once that budget is exceeded the
-  message is moved to the failed hash.
+- `Delay` moves the message to the delayed hash and acknowledges it from the
+  active stream. The handler runs at most `max_retry + 1` times in total (one
+  initial attempt plus up to `max_retry` re-deliveries). Once that budget is
+  exceeded the message is moved to the failed hash.
 - `Fail` skips the retry budget and sends the message to the failed hash
   immediately.
 
-Failed messages stay in the failed hash until `retry_failed(&id)` is called
-or they are removed manually.
+Delayed and failed messages stay in their respective hashes until they are
+removed manually or moved back to the queue.
 
 ### Redis implementation
 
@@ -119,6 +118,73 @@ async fn main() -> Result<(), rikka_mq::error::Error> {
 ```
 
 `RetryPolicy::Exponential { initial, factor, max }` is also available when retry intervals should grow between attempts.
+
+## Operational surface
+
+Quick reference of traits and types used for queue operations and inspection:
+
+- `MessageQueue<I, T>`: Core trait for enqueuing messages.
+- `QueueStats`: Provides `queued_len()` to check the number of messages in the active stream.
+- `QueueInspector<I, T>`: Tools for inspecting delayed and failed messages (depth, get, scan).
+- `FailedRetry<I>`: Provides `retry_failed(&id)` to replay messages from the failed hash.
+- `Cursor` / `ScanPage<T>`: Opaque cursor and result page for incremental scanning.
+- `ErroredInfo<I, T>`: Metadata for failed messages including the original error.
+
+### Inspecting queue depth
+
+Assuming you already have `mq` from the example above, you can check the live depth of each internal state:
+
+```rust
+use rikka_mq::inspect::QueueInspector;
+use rikka_mq::mq::QueueStats;
+
+// Active stream depth (includes messages waiting for delivery and in-flight)
+let queued = mq.queued_len().await?;
+// Messages recorded as delayed after a Delay error
+let delayed = mq.delayed_len().await?;
+// Messages that exceeded retry budget or returned a Fail error
+let failed = mq.failed_len().await?;
+```
+
+- `queued_len`: Monitor this to scale workers or detect ingestion spikes.
+- `delayed_len`: High numbers here indicate frequent transient failures or slow processing of retries.
+- `failed_len`: These require manual intervention or a `retry_failed` call.
+
+### Paging through failed/delayed entries
+
+Iteration over failed or delayed messages uses an opaque `Cursor`. This ensures large sets can be scanned incrementally without blocking the Redis server.
+
+```rust
+use rikka_mq::inspect::{Cursor, QueueInspector};
+use tracing::info;
+
+let mut cursor: Option<Cursor> = None;
+loop {
+    let page = mq.scan_failed(100, cursor).await?;
+    for item in page.items {
+        info!("ID: {:?}, Data: {:?}, Error: {}", item.id(), item.data(), item.error());
+    }
+    cursor = page.next_cursor;
+    if cursor.is_none() {
+        break;
+    }
+}
+```
+
+`ScanPage::items` contains `Vec<ErroredInfo<I, T>>` for `scan_failed` and `Vec<QueueInfo<I, T>>` for `scan_delayed`. Note that `Cursor` is an opaque token intended for use as a continuation for the same scan.
+
+### Replaying a failed message
+
+When a message is in the failed hash, you can move it back to the active queue for another delivery attempt.
+
+```rust
+use rikka_mq::inspect::FailedRetry;
+
+// Replay a message by its ID
+mq.retry_failed(&id).await?;
+```
+
+RikkaMQ uses enqueue-before-delete semantics: if the process crashes between enqueuing and deleting from the failed hash, the message might be duplicated but is never lost. Retried messages re-enter the queue fresh and respect the configured `retry_policy`.
 
 The Redis worker path uses the pool for non-blocking commands such as `XADD`,
 `XACK`, `XDEL`, `HSCAN`, `XCLAIM`, and retry metadata updates, while each worker
