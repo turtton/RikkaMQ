@@ -225,4 +225,6 @@ when Docker is available.
 
 Criterion benchmarks live under `benches/`. See `benches/README.md` for the
 Redis enqueue starvation benchmark, its `--all-features` invocation, Docker
-requirement, and baseline notes.
+requirement, and baseline notes. The v0.2.0-alpha.1 baseline records a median
+of ~6.75 ms and a p95 of ~7.66 ms for a 50-enqueue batch against
+`redis:7-alpine`, well within the 1s / 2s pass criteria.

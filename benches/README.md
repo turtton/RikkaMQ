@@ -24,6 +24,22 @@ dedicated connections, the absolute pass criteria are:
 - median time for the 50-enqueue batch: **1s or less**
 - p95 time for the 50-enqueue batch: **2s or less**
 
+### Recorded results (v0.2.0-alpha.1)
+
+Run on 2026-05-23 with Docker 29.4.2 hosting `redis:7-alpine` via
+`testcontainers`. Ten Criterion samples of one 50-enqueue batch each:
+
+| metric                    | value     |
+| ------------------------- | --------- |
+| median (point estimate)   | ~6.75 ms  |
+| mean (95% CI)             | 6.36–6.99 ms |
+| p95 (sample max of 10)    | ~7.66 ms  |
+| throughput (point)        | ~7.49 Kelem/s |
+
+Both pass criteria are met with roughly two orders of magnitude of headroom,
+confirming that the dedicated worker connections introduced in Phase 3 task 15
+keep enqueue throughput decoupled from blocking `XREAD` reads.
+
 The historical v0.1.3 API is too different for this benchmark source to compile
 unchanged, so do not generate a v0.1.3 baseline from this file. Evaluate current
 code against the absolute criteria above. For v0.2 and later releases, save a
