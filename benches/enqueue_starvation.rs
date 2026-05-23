@@ -49,19 +49,27 @@ mod bench {
         let runtime = TokioRuntime::new().expect("tokio runtime for enqueue starvation bench");
         let mut group = c.benchmark_group("enqueue_starvation");
         group.throughput(Throughput::Elements(ENQUEUE_COUNT));
-        group.bench_function(BenchmarkId::new("pool_equals_workers", ENQUEUE_COUNT), |b| {
-            b.iter_custom(|iterations| {
-                runtime.block_on(async move {
-                    let mut elapsed = Duration::ZERO;
-                    for _ in 0..iterations {
-                        let mut state = BenchState::start().await.expect("bench setup should succeed");
-                        elapsed += state.measure_enqueue_wall_clock().await;
-                        state.shutdown().await.expect("workers should shut down cleanly");
-                    }
-                    elapsed
-                })
-            });
-        });
+        group.bench_function(
+            BenchmarkId::new("pool_equals_workers", ENQUEUE_COUNT),
+            |b| {
+                b.iter_custom(|iterations| {
+                    runtime.block_on(async move {
+                        let mut elapsed = Duration::ZERO;
+                        for _ in 0..iterations {
+                            let mut state = BenchState::start()
+                                .await
+                                .expect("bench setup should succeed");
+                            elapsed += state.measure_enqueue_wall_clock().await;
+                            state
+                                .shutdown()
+                                .await
+                                .expect("workers should shut down cleanly");
+                        }
+                        elapsed
+                    })
+                });
+            },
+        );
         group.finish();
     }
 

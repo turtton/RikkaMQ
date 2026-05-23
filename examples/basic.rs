@@ -61,11 +61,12 @@ async fn main() -> ExampleResult {
 
     let shutdown_result = tokio::time::timeout(Duration::from_secs(3), workers.shutdown()).await;
     let final_depth = mq.queued_len().await?;
-    shutdown_result
-        .map_err(|_| Error::Backend(Box::new(std::io::Error::new(
+    shutdown_result.map_err(|_| {
+        Error::Backend(Box::new(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
             "workers did not shut down within 3s",
-        ))))??;
+        )))
+    })??;
     info!(queued_len = final_depth, "basic example completed cleanly");
     Ok(())
 }

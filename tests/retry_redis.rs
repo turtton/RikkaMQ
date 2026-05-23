@@ -40,7 +40,8 @@ async fn delay_three_times_then_ok_eventually_drains_stream_and_delayed() -> Tes
     })
     .await?;
     let mq = &setup.mq;
-    mq.enqueue(QueueInfo::new(42, "payload".to_string())).await?;
+    mq.enqueue(QueueInfo::new(42, "payload".to_string()))
+        .await?;
 
     let invocations = Arc::new(AtomicUsize::new(0));
     let invocations_for_handler = invocations.clone();
@@ -52,9 +53,9 @@ async fn delay_three_times_then_ok_eventually_drains_stream_and_delayed() -> Tes
                 async move {
                     let attempt = invocations.fetch_add(1, Ordering::SeqCst) + 1;
                     if attempt <= 3 {
-                        Err(ErrorOperation::Delay(Box::new(std::io::Error::other(format!(
-                            "delayed attempt {attempt}"
-                        )))))
+                        Err(ErrorOperation::Delay(Box::new(std::io::Error::other(
+                            format!("delayed attempt {attempt}"),
+                        ))))
                     } else {
                         Ok(())
                     }
@@ -63,13 +64,17 @@ async fn delay_three_times_then_ok_eventually_drains_stream_and_delayed() -> Tes
         )
         .await?;
 
-    wait_for("retry to drain stream and delayed hash", Duration::from_secs(20), || async {
-        let queued = mq.queued_len().await?;
-        let delayed = mq.delayed_len().await?;
-        let failed = mq.failed_len().await?;
-        let count = invocations.load(Ordering::SeqCst);
-        Ok((queued == 0 && delayed == 0 && failed == 0 && count == 4).then_some(()))
-    })
+    wait_for(
+        "retry to drain stream and delayed hash",
+        Duration::from_secs(20),
+        || async {
+            let queued = mq.queued_len().await?;
+            let delayed = mq.delayed_len().await?;
+            let failed = mq.failed_len().await?;
+            let count = invocations.load(Ordering::SeqCst);
+            Ok((queued == 0 && delayed == 0 && failed == 0 && count == 4).then_some(()))
+        },
+    )
     .await?;
 
     assert_eq!(mq.queued_len().await?, 0);
@@ -133,7 +138,11 @@ async fn wait_for_redis(pool: &deadpool_redis::Pool) -> Result<(), Error> {
     }
 }
 
-async fn wait_for<T, F, Fut>(description: &'static str, max_wait: Duration, mut condition: F) -> Result<T, Error>
+async fn wait_for<T, F, Fut>(
+    description: &'static str,
+    max_wait: Duration,
+    mut condition: F,
+) -> Result<T, Error>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<Option<T>, Error>>,

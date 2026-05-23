@@ -49,10 +49,14 @@ async fn queued_len_reflects_enqueue_and_consume() -> TestResult {
         )
         .await?;
 
-    wait_for("handler to complete five messages", Duration::from_secs(10), || {
-        let completed = completed.clone();
-        async move { Ok((completed.load(Ordering::SeqCst) == 5).then_some(())) }
-    })
+    wait_for(
+        "handler to complete five messages",
+        Duration::from_secs(10),
+        || {
+            let completed = completed.clone();
+            async move { Ok((completed.load(Ordering::SeqCst) == 5).then_some(())) }
+        },
+    )
     .await?;
     tokio::time::timeout(Duration::from_secs(2), workers.shutdown())
         .await
@@ -75,19 +79,18 @@ async fn failed_len_and_get_failed_round_trip() -> TestResult {
         .start_workers(
             (),
             into_handler(|(), payload: String| async move {
-                Err(ErrorOperation::Fail(Box::new(std::io::Error::other(format!(
-                    "failed {payload}"
-                )))))
+                Err(ErrorOperation::Fail(Box::new(std::io::Error::other(
+                    format!("failed {payload}"),
+                ))))
             }),
         )
         .await?;
 
     wait_for_failed_len(mq, 3).await?;
     for id in &ids {
-        let failed = mq
-            .get_failed(id)
-            .await?
-            .ok_or_else(|| Error::Backend(Box::new(std::io::Error::other("missing failed entry"))))?;
+        let failed = mq.get_failed(id).await?.ok_or_else(|| {
+            Error::Backend(Box::new(std::io::Error::other("missing failed entry")))
+        })?;
         assert_valid_errored_info(&failed);
         assert_eq!(failed.id(), id);
         assert_eq!(failed.data(), &payload_for(*id));
@@ -115,22 +118,23 @@ async fn delayed_len_and_get_delayed_round_trip() -> TestResult {
         .start_workers(
             (),
             into_handler(|(), payload: String| async move {
-                Err(ErrorOperation::Delay(Box::new(std::io::Error::other(format!(
-                    "delayed {payload}"
-                )))))
+                Err(ErrorOperation::Delay(Box::new(std::io::Error::other(
+                    format!("delayed {payload}"),
+                ))))
             }),
         )
         .await?;
 
-    wait_for("delayed_len to reach all entries", Duration::from_secs(4), || async {
-        Ok((mq.delayed_len().await? == 2).then_some(()))
-    })
+    wait_for(
+        "delayed_len to reach all entries",
+        Duration::from_secs(4),
+        || async { Ok((mq.delayed_len().await? == 2).then_some(())) },
+    )
     .await?;
     for id in &ids {
-        let delayed = mq
-            .get_delayed(id)
-            .await?
-            .ok_or_else(|| Error::Backend(Box::new(std::io::Error::other("missing delayed entry"))))?;
+        let delayed = mq.get_delayed(id).await?.ok_or_else(|| {
+            Error::Backend(Box::new(std::io::Error::other("missing delayed entry")))
+        })?;
         assert_eq!(delayed.id(), id);
         assert_eq!(delayed.data(), &payload_for(*id));
     }
@@ -153,9 +157,9 @@ async fn scan_failed_walks_full_set_with_cursor() -> TestResult {
         .start_workers(
             (),
             into_handler(|(), payload: String| async move {
-                Err(ErrorOperation::Fail(Box::new(std::io::Error::other(format!(
-                    "failed {payload}"
-                )))))
+                Err(ErrorOperation::Fail(Box::new(std::io::Error::other(
+                    format!("failed {payload}"),
+                ))))
             }),
         )
         .await?;
@@ -195,9 +199,9 @@ async fn scan_delayed_walks_full_set_with_cursor() -> TestResult {
         .start_workers(
             (),
             into_handler(|(), payload: String| async move {
-                Err(ErrorOperation::Delay(Box::new(std::io::Error::other(format!(
-                    "delayed {payload}"
-                )))))
+                Err(ErrorOperation::Delay(Box::new(std::io::Error::other(
+                    format!("delayed {payload}"),
+                ))))
             }),
         )
         .await?;
@@ -232,9 +236,9 @@ async fn cursor_is_opaque_across_concurrent_scans() -> TestResult {
         .start_workers(
             (),
             into_handler(|(), payload: String| async move {
-                Err(ErrorOperation::Fail(Box::new(std::io::Error::other(format!(
-                    "failed {payload}"
-                )))))
+                Err(ErrorOperation::Fail(Box::new(std::io::Error::other(
+                    format!("failed {payload}"),
+                ))))
             }),
         )
         .await?;
@@ -326,20 +330,28 @@ async fn enqueue_messages(
 }
 
 async fn wait_for_failed_len(mq: &TestQueue, expected: u64) -> Result<(), Error> {
-    wait_for("failed_len to reach expected count", Duration::from_secs(10), || async {
-        Ok((mq.failed_len().await? == expected).then_some(()))
-    })
+    wait_for(
+        "failed_len to reach expected count",
+        Duration::from_secs(10),
+        || async { Ok((mq.failed_len().await? == expected).then_some(())) },
+    )
     .await
 }
 
 async fn wait_for_delayed_len(mq: &TestQueue, expected: u64) -> Result<(), Error> {
-    wait_for("delayed_len to reach expected count", Duration::from_secs(10), || async {
-        Ok((mq.delayed_len().await? == expected).then_some(()))
-    })
+    wait_for(
+        "delayed_len to reach expected count",
+        Duration::from_secs(10),
+        || async { Ok((mq.delayed_len().await? == expected).then_some(())) },
+    )
     .await
 }
 
-async fn wait_for<T, F, Fut>(description: &'static str, max_wait: Duration, mut condition: F) -> Result<T, Error>
+async fn wait_for<T, F, Fut>(
+    description: &'static str,
+    max_wait: Duration,
+    mut condition: F,
+) -> Result<T, Error>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<Option<T>, Error>>,
@@ -377,7 +389,11 @@ fn assert_queue_ids(items: Vec<QueueInfo<u64, String>>, expected: &HashSet<u64>)
     let mut seen = HashSet::new();
     for item in items {
         assert_eq!(item.data(), &payload_for(*item.id()));
-        assert!(seen.insert(*item.id()), "duplicate delayed id {}", item.id());
+        assert!(
+            seen.insert(*item.id()),
+            "duplicate delayed id {}",
+            item.id()
+        );
     }
     assert_eq!(&seen, expected);
 }

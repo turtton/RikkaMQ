@@ -390,7 +390,9 @@ mod tests {
         let store = MemoryStore::with_claim(2);
         run_once(
             store.clone(),
-            into_handler(|(), _| async { Err(ErrorOperation::Delay(Box::new(SimpleError("delay")))) }),
+            into_handler(|(), _| async {
+                Err(ErrorOperation::Delay(Box::new(SimpleError("delay"))))
+            }),
         )
         .await?;
         assert_eq!(
@@ -405,7 +407,9 @@ mod tests {
         let store = MemoryStore::with_claim(3);
         run_once(
             store.clone(),
-            into_handler(|(), _| async { Err(ErrorOperation::Delay(Box::new(SimpleError("delay")))) }),
+            into_handler(|(), _| async {
+                Err(ErrorOperation::Delay(Box::new(SimpleError("delay"))))
+            }),
         )
         .await?;
         assert_eq!(
@@ -425,7 +429,9 @@ mod tests {
         let store = MemoryStore::with_claim(1);
         run_once(
             store.clone(),
-            into_handler(|(), _| async { Err(ErrorOperation::Fail(Box::new(SimpleError("fail")))) }),
+            into_handler(|(), _| async {
+                Err(ErrorOperation::Fail(Box::new(SimpleError("fail"))))
+            }),
         )
         .await?;
         assert_eq!(
@@ -445,7 +451,9 @@ mod tests {
         let store = MemoryStore::with_claim(0);
         run_once(
             store.clone(),
-            into_handler(|(), _| async { Err(ErrorOperation::Fail(Box::new(SimpleError("fail")))) }),
+            into_handler(|(), _| async {
+                Err(ErrorOperation::Fail(Box::new(SimpleError("fail"))))
+            }),
         )
         .await?;
         assert_eq!(
@@ -475,7 +483,9 @@ mod tests {
         let fail_store = MemoryStore::with_claim(1);
         run_until_first_idle(
             fail_store.clone(),
-            into_handler(|(), _| async { Err(ErrorOperation::Fail(Box::new(SimpleError("fail")))) }),
+            into_handler(|(), _| async {
+                Err(ErrorOperation::Fail(Box::new(SimpleError("fail"))))
+            }),
         )
         .await?;
         assert_eq!(
@@ -495,7 +505,9 @@ mod tests {
         let store = MemoryStore::with_claim(3).fail_record_failed_on(1);
         let result = run_once(
             store.clone(),
-            into_handler(|(), _| async { Err(ErrorOperation::Delay(Box::new(SimpleError("delay")))) }),
+            into_handler(|(), _| async {
+                Err(ErrorOperation::Delay(Box::new(SimpleError("delay"))))
+            }),
         )
         .await;
         assert!(result.is_err());
@@ -510,7 +522,9 @@ mod tests {
         let store = MemoryStore::with_claim(2).fail_record_delayed_on(1);
         let result = run_once(
             store.clone(),
-            into_handler(|(), _| async { Err(ErrorOperation::Delay(Box::new(SimpleError("delay")))) }),
+            into_handler(|(), _| async {
+                Err(ErrorOperation::Delay(Box::new(SimpleError("delay"))))
+            }),
         )
         .await;
         assert!(result.is_err());
@@ -525,7 +539,9 @@ mod tests {
         let store = MemoryStore::with_claim(0).fail_record_failed_on(1);
         let result = run_once(
             store.clone(),
-            into_handler(|(), _| async { Err(ErrorOperation::Fail(Box::new(SimpleError("fail")))) }),
+            into_handler(|(), _| async {
+                Err(ErrorOperation::Fail(Box::new(SimpleError("fail"))))
+            }),
         )
         .await;
         assert!(result.is_err());
@@ -588,7 +604,10 @@ mod tests {
         handle.await.map_err(|e| Error::Join(Box::new(e)))??;
         assert_eq!(
             store.events(),
-            vec![Event::Claim("stream-1".into()), Event::Ack("stream-1".into())]
+            vec![
+                Event::Claim("stream-1".into()),
+                Event::Ack("stream-1".into())
+            ]
         );
         Ok(())
     }
@@ -596,7 +615,8 @@ mod tests {
     #[tokio::test]
     async fn claim_next_error_exits_worker_without_ack() {
         let store = MemoryStore::with_claim(0).fail_claim_next_on(1);
-        let result = run_until_first_idle(store.clone(), into_handler(|(), _| async { Ok(()) })).await;
+        let result =
+            run_until_first_idle(store.clone(), into_handler(|(), _| async { Ok(()) })).await;
 
         assert!(result.is_err());
         assert_eq!(store.events(), vec![Event::ClaimNextError]);
@@ -609,16 +629,16 @@ mod tests {
         let marker = Arc::new(Mutex::new(Vec::new()));
         let marker_for_worker = marker.clone();
         let handle = tokio::spawn(async move {
-            marker_for_worker
-                .lock()
-                .map_err(lock_error)?
-                .push("joined");
+            marker_for_worker.lock().map_err(lock_error)?.push("joined");
             Ok(())
         });
 
         let result = WorkerSet::new(shutdown_tx, vec![handle]).shutdown().await;
         assert!(matches!(result, Err(Error::Shutdown(_))));
-        assert_eq!(*marker.lock().expect("test mutex should not be poisoned"), ["joined"]);
+        assert_eq!(
+            *marker.lock().expect("test mutex should not be poisoned"),
+            ["joined"]
+        );
     }
 
     #[tokio::test]
@@ -628,16 +648,18 @@ mod tests {
         let first = tokio::spawn(async { Err(Error::Backend(Box::new(SimpleError("first")))) });
         let marker_for_second = marker.clone();
         let second = tokio::spawn(async move {
-            marker_for_second
-                .lock()
-                .map_err(lock_error)?
-                .push("second");
+            marker_for_second.lock().map_err(lock_error)?.push("second");
             Ok(())
         });
 
-        let result = WorkerSet::new(shutdown_tx, vec![first, second]).join().await;
+        let result = WorkerSet::new(shutdown_tx, vec![first, second])
+            .join()
+            .await;
         assert!(matches!(result, Err(Error::Backend(_))));
-        assert_eq!(*marker.lock().expect("test mutex should not be poisoned"), ["second"]);
+        assert_eq!(
+            *marker.lock().expect("test mutex should not be poisoned"),
+            ["second"]
+        );
     }
 
     #[tokio::test]
@@ -678,7 +700,9 @@ mod tests {
                 let seen = seen_for_handler.clone();
                 async move {
                     seen.lock()
-                        .map_err(|e| ErrorOperation::Fail(Box::new(std::io::Error::other(e.to_string()))))?
+                        .map_err(|e| {
+                            ErrorOperation::Fail(Box::new(std::io::Error::other(e.to_string())))
+                        })?
                         .push(data);
                     Ok(())
                 }
@@ -690,9 +714,18 @@ mod tests {
         Ok(())
     }
 
-    async fn run_once(handler_store: MemoryStore, handler: HandlerFn<(), String>) -> Result<(), Error> {
+    async fn run_once(
+        handler_store: MemoryStore,
+        handler: HandlerFn<(), String>,
+    ) -> Result<(), Error> {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let handle = tokio::spawn(run_worker((), handler, handler_store, test_config(), shutdown_rx));
+        let handle = tokio::spawn(run_worker(
+            (),
+            handler,
+            handler_store,
+            test_config(),
+            shutdown_rx,
+        ));
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         shutdown_tx
             .send(true)
@@ -705,7 +738,13 @@ mod tests {
         handler: HandlerFn<(), String>,
     ) -> Result<(), Error> {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let handle = tokio::spawn(run_worker((), handler, handler_store, test_config(), shutdown_rx));
+        let handle = tokio::spawn(run_worker(
+            (),
+            handler,
+            handler_store,
+            test_config(),
+            shutdown_rx,
+        ));
         tokio::task::yield_now().await;
         shutdown_tx
             .send(true)

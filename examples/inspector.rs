@@ -49,7 +49,8 @@ async fn main() -> ExampleResult {
         .await?;
 
     for id in 1..=30 {
-        mq.enqueue(QueueInfo::new(id, format!("message-{id}"))).await?;
+        mq.enqueue(QueueInfo::new(id, format!("message-{id}")))
+            .await?;
     }
     info!("enqueued 30 messages for failed scan");
 
@@ -65,12 +66,16 @@ async fn main() -> ExampleResult {
 
     let shutdown_result = tokio::time::timeout(Duration::from_secs(3), workers.shutdown()).await;
     let final_failed = mq.failed_len().await?;
-    shutdown_result
-        .map_err(|_| Error::Backend(Box::new(std::io::Error::new(
+    shutdown_result.map_err(|_| {
+        Error::Backend(Box::new(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
             "workers did not shut down within 3s",
-        ))))??;
-    info!(failed_len = final_failed, "inspector example completed cleanly");
+        )))
+    })??;
+    info!(
+        failed_len = final_failed,
+        "inspector example completed cleanly"
+    );
     Ok(())
 }
 
@@ -178,7 +183,11 @@ async fn scan_failed_entries(mq: &ExampleQueue) -> Result<Vec<ErroredInfo<u64, S
         let page = mq.scan_failed(7, cursor.take()).await?;
         let page_size = page.items.len();
         collected.extend(page.items);
-        info!(page_size, running_total = collected.len(), "scanned failed page");
+        info!(
+            page_size,
+            running_total = collected.len(),
+            "scanned failed page"
+        );
         match page.next_cursor {
             Some(next) => cursor = Some(next),
             None => return Ok(collected),

@@ -47,7 +47,12 @@ impl Default for RetryPolicy {
     }
 }
 
-fn exponential_delay(initial: Duration, factor: f64, max: Duration, delivered_count: u32) -> Duration {
+fn exponential_delay(
+    initial: Duration,
+    factor: f64,
+    max: Duration,
+    delivered_count: u32,
+) -> Duration {
     let factor = if factor.is_finite() {
         factor.max(1.0)
     } else {
@@ -69,7 +74,9 @@ fn exponential_delay(initial: Duration, factor: f64, max: Duration, delivered_co
     if !delay_secs.is_finite() || delay_secs >= max.as_secs_f64() {
         return max;
     }
-    Duration::try_from_secs_f64(delay_secs).unwrap_or(max).min(max)
+    Duration::try_from_secs_f64(delay_secs)
+        .unwrap_or(max)
+        .min(max)
 }
 
 #[derive(Debug, Clone)]

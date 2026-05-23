@@ -85,12 +85,16 @@ async fn main() -> ExampleResult {
     );
 
     let shutdown_result = tokio::time::timeout(Duration::from_secs(2), workers.shutdown()).await;
-    shutdown_result
-        .map_err(|_| Error::Backend(Box::new(std::io::Error::new(
+    shutdown_result.map_err(|_| {
+        Error::Backend(Box::new(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
             "workers did not shut down within 2s",
-        ))))??;
-    info!(queued_len, delayed_len, failed_len, "retry example completed cleanly");
+        )))
+    })??;
+    info!(
+        queued_len,
+        delayed_len, failed_len, "retry example completed cleanly"
+    );
     Ok(())
 }
 
@@ -167,7 +171,11 @@ async fn wait_for_delayed_observation(mq: &ExampleQueue, counter: &AtomicU32) ->
     wait_for("delayed retry observation", || async {
         let delayed = mq.delayed_len().await?;
         let attempts = counter.load(Ordering::SeqCst);
-        info!(delayed_len = delayed, delivered_count = attempts, "observing retry state");
+        info!(
+            delayed_len = delayed,
+            delivered_count = attempts,
+            "observing retry state"
+        );
         Ok((delayed > 0).then_some(()))
     })
     .await
@@ -177,7 +185,11 @@ async fn wait_for_all_clear(mq: &ExampleQueue) -> Result<(), Error> {
     wait_for("queue and delayed hashes to clear", || async {
         let queued = mq.queued_len().await?;
         let delayed = mq.delayed_len().await?;
-        info!(queued_len = queued, delayed_len = delayed, "waiting for transient success");
+        info!(
+            queued_len = queued,
+            delayed_len = delayed,
+            "waiting for transient success"
+        );
         Ok((queued + delayed == 0).then_some(()))
     })
     .await

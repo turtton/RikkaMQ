@@ -3,8 +3,8 @@ use crate::config::RetryPolicy;
 use crate::error::Error;
 use crate::info::{ErroredInfo, QueueInfo, StoredErroredInfo};
 use crate::worker::{ClaimedMessage, QueueStore};
-use deadpool_redis::redis::streams::StreamReadOptions;
 use deadpool_redis::redis::aio::MultiplexedConnection;
+use deadpool_redis::redis::streams::StreamReadOptions;
 use deadpool_redis::redis::{cmd, AsyncCommands, Client, Value};
 use deadpool_redis::{Connection, Pool};
 use serde::{Deserialize, Serialize};
@@ -45,7 +45,10 @@ impl RedisStoreOps {
     }
 
     pub(crate) async fn blocking_connection(&self) -> Result<MultiplexedConnection, Error> {
-        Ok(self.blocking_client.get_multiplexed_async_connection().await?)
+        Ok(self
+            .blocking_client
+            .get_multiplexed_async_connection()
+            .await?)
     }
 
     pub(crate) fn name(&self) -> &str {
@@ -231,7 +234,6 @@ impl<I, T> RedisQueueStore<I, T> {
             _marker: PhantomData,
         }
     }
-
 }
 
 impl<I, T> RedisQueueStore<I, T>
@@ -411,7 +413,6 @@ where
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + 'a>> {
         Box::pin(async move { self.remove_delayed_inner(id).await })
     }
-
 }
 
 fn parse_xread<I, T>(

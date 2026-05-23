@@ -4,8 +4,8 @@ use crate::error::Error;
 use crate::info::{ErroredInfo, QueueInfo, StoredErroredInfo};
 use crate::inspect::{Cursor, FailedRetry, QueueInspector, ScanPage};
 use serde::{Deserialize, Serialize};
-use std::future::Future;
 use std::fmt::Display;
+use std::future::Future;
 
 impl<I, T> QueueInspector<I, T> for RedisMessageQueue<I, T>
 where
@@ -83,7 +83,10 @@ pub(crate) trait FailedRetrySeam<I, T>: Sync {
         &self,
         id: &I,
     ) -> impl Future<Output = Result<Option<StoredErroredInfo<I, T>>, Error>> + Send;
-    fn insert_waiting(&self, info: &QueueInfo<I, T>) -> impl Future<Output = Result<(), Error>> + Send;
+    fn insert_waiting(
+        &self,
+        info: &QueueInfo<I, T>,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
     fn remove_failed_info(&self, id: &I) -> impl Future<Output = Result<(), Error>> + Send;
 }
 
@@ -207,7 +210,10 @@ mod tests {
     }
 
     impl FailedRetrySeam<u64, String> for RetrySeamFake {
-        async fn load_failed(&self, id: &u64) -> Result<Option<StoredErroredInfo<u64, String>>, Error> {
+        async fn load_failed(
+            &self,
+            id: &u64,
+        ) -> Result<Option<StoredErroredInfo<u64, String>>, Error> {
             let mut state = self.state.lock().map_err(lock_error)?;
             state.events.push(Event::LoadFailed(*id));
             Ok(state.failed.get(id).map(|info| StoredErroredInfo {

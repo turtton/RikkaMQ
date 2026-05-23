@@ -123,7 +123,8 @@ mod tests {
 
     #[test]
     fn protocol_display_includes_field_when_present() {
-        let err = Error::protocol_field("XREAD", "entry.stream_id", "expected bulk string, got Nil");
+        let err =
+            Error::protocol_field("XREAD", "entry.stream_id", "expected bulk string, got Nil");
         assert_eq!(
             err.to_string(),
             "protocol error during XREAD (entry.stream_id): expected bulk string, got Nil",

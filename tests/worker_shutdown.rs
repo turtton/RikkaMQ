@@ -87,7 +87,10 @@ async fn idle_worker_shutdown_joins_within_two_seconds_without_timeout() -> Resu
     let shutdown_result = tokio::time::timeout(Duration::from_secs(2), workers.shutdown())
         .await
         .map_err(|e| Error::Shutdown(Box::new(e)))?;
-    assert!(shutdown_result.is_ok(), "shutdown failed: {shutdown_result:?}");
+    assert!(
+        shutdown_result.is_ok(),
+        "shutdown failed: {shutdown_result:?}"
+    );
     Ok(())
 }
 
