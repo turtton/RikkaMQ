@@ -14,6 +14,11 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
 
+/// Maximum natural wait for one blocking XREAD. Shutdown latency is bounded by
+/// approximately `XREAD_BLOCK_MS` plus one worker-loop poll.
+const XREAD_BLOCK_MS: usize = 100;
+const XPENDING_SCAN_COUNT: usize = 32;
+
 #[derive(Clone)]
 pub(crate) struct RedisStoreOps {
     pool: Pool,
@@ -227,9 +232,6 @@ impl<I, T> RedisQueueStore<I, T> {
         }
     }
 
-    pub(crate) fn retry_policy(&self) -> &RetryPolicy {
-        &self.retry_policy
-    }
 }
 
 impl<I, T> RedisQueueStore<I, T>
@@ -241,8 +243,11 @@ where
         &self,
         con: &mut MultiplexedConnection,
     ) -> Result<Option<ClaimedMessage<I, T>>, Error> {
+        // Let each blocking XREAD complete naturally; the worker checks
+        // shutdown between polls, so max shutdown latency is roughly
+        // XREAD_BLOCK_MS plus one loop poll.
         let options = StreamReadOptions::default()
-            .block(1000)
+            .block(XREAD_BLOCK_MS)
             .count(1)
             .group(group(&self.ops.name), &self.consumer_id);
         let result: Value = con
@@ -256,63 +261,50 @@ where
         con: &mut Connection,
     ) -> Result<Option<ClaimedMessage<I, T>>, Error> {
         self.ops.ensure_group(con).await?;
-        let time_millis = u64::try_from(self.retry_policy.min_delay().as_millis())?;
         let group_name = group(&self.ops.name);
-        let value: Value = cmd("XPENDING")
-            .arg(&self.ops.name)
-            .arg(&group_name)
-            .arg("IDLE")
-            .arg(time_millis)
-            .arg("-")
-            .arg("+")
-            .arg(1)
-            .query_async(con)
-            .await?;
-        let bulk = match value {
-            Value::Array(bulk) => bulk,
-            other => {
-                return Err(Error::protocol_field(
-                    "XPENDING",
-                    "reply",
-                    format!("expected array, got {other:?}"),
-                ))
+        let prefilter_ms = millis(self.retry_policy.min_delay())?;
+        let mut start = "-".to_string();
+
+        loop {
+            let value: Value = cmd("XPENDING")
+                .arg(&self.ops.name)
+                .arg(&group_name)
+                .arg("IDLE")
+                .arg(prefilter_ms)
+                .arg(&start)
+                .arg("+")
+                .arg(XPENDING_SCAN_COUNT)
+                .query_async(&mut *con)
+                .await?;
+            let entries = parse_xpending_page(value)?;
+            if entries.is_empty() {
+                return Ok(None);
             }
-        };
-        if bulk.is_empty() {
-            return Ok(None);
+
+            for entry in &entries {
+                let required_idle_ms = millis(self.retry_policy.delay_for(entry.delivered_count))?;
+                if entry.idle_ms < required_idle_ms {
+                    continue;
+                }
+
+                let result: Value = cmd("XCLAIM")
+                    .arg(&self.ops.name)
+                    .arg(&group_name)
+                    .arg(&self.consumer_id)
+                    .arg(required_idle_ms)
+                    .arg(&entry.id)
+                    .query_async(&mut *con)
+                    .await?;
+                if let Some(claimed) = parse_xclaim(result, entry.delivered_count)? {
+                    return Ok(Some(claimed));
+                }
+            }
+
+            if entries.len() < XPENDING_SCAN_COUNT {
+                return Ok(None);
+            }
+            start = format!("({}", entries.last().expect("entries is non-empty").id);
         }
-        let entry = match bulk.as_slice() {
-            [Value::Array(entry)] => entry,
-            other => {
-                return Err(Error::protocol_field(
-                    "XPENDING",
-                    "summary",
-                    format!("expected single-entry array, got {other:?}"),
-                ))
-            }
-        };
-        let (id, delivered_count) = match entry.as_slice() {
-            [Value::BulkString(id), Value::BulkString(_owner), _idle, Value::Int(count)] => {
-                (std::str::from_utf8(id)?.to_string(), u32::try_from(*count)?)
-            }
-            other => {
-                return Err(Error::protocol_field(
-                    "XPENDING",
-                    "entry",
-                    format!("expected [id, owner, idle, count], got {other:?}"),
-                ))
-            }
-        };
-        let result: Value = con
-            .xclaim(
-                &self.ops.name,
-                &group_name,
-                &self.consumer_id,
-                time_millis,
-                &[&id],
-            )
-            .await?;
-        parse_xclaim(result, delivered_count)
     }
 
     async fn mark_done(&self, stream_id: &str) -> Result<(), Error> {
@@ -420,9 +412,6 @@ where
         Box::pin(async move { self.remove_delayed_inner(id).await })
     }
 
-    fn retry_delay_for(&self, delivered_count: u32) -> std::time::Duration {
-        self.retry_policy().delay_for(delivered_count)
-    }
 }
 
 fn parse_xread<I, T>(
@@ -510,6 +499,61 @@ where
         }
     };
     parse_stream_entry(entry, "XCLAIM", delivered_count)
+}
+
+#[derive(Debug)]
+struct PendingEntry {
+    id: String,
+    idle_ms: u64,
+    delivered_count: u32,
+}
+
+fn parse_xpending_page(result: Value) -> Result<Vec<PendingEntry>, Error> {
+    let entries = match result {
+        Value::Array(entries) => entries,
+        other => {
+            return Err(Error::protocol_field(
+                "XPENDING",
+                "reply",
+                format!("expected array, got {other:?}"),
+            ))
+        }
+    };
+    let mut parsed = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let fields = match entry {
+            Value::Array(fields) => fields,
+            other => {
+                return Err(Error::protocol_field(
+                    "XPENDING",
+                    "entry",
+                    format!("expected entry array, got {other:?}"),
+                ))
+            }
+        };
+        let pending = match fields.as_slice() {
+            [Value::BulkString(id), Value::BulkString(_owner), Value::Int(idle), Value::Int(count)] => {
+                PendingEntry {
+                    id: std::str::from_utf8(id)?.to_string(),
+                    idle_ms: u64::try_from(*idle)?,
+                    delivered_count: u32::try_from(*count)?,
+                }
+            }
+            other => {
+                return Err(Error::protocol_field(
+                    "XPENDING",
+                    "entry",
+                    format!("expected [id, owner, idle, count], got {other:?}"),
+                ))
+            }
+        };
+        parsed.push(pending);
+    }
+    Ok(parsed)
+}
+
+fn millis(duration: std::time::Duration) -> Result<u64, Error> {
+    Ok(u64::try_from(duration.as_millis())?)
 }
 
 fn parse_stream_entry<I, T>(

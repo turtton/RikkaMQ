@@ -27,7 +27,7 @@ struct Payload {
 
 #[ignore = "requires Docker for Redis testcontainer"]
 #[tokio::test]
-async fn worker_shutdown_joins_within_five_seconds() -> Result<(), Error> {
+async fn idle_worker_shutdown_joins_within_two_seconds_without_timeout() -> Result<(), Error> {
     let image = GenericImage::new("redis", "7-alpine").with_exposed_port(6379.into());
     let container: ContainerAsync<GenericImage> = image
         .start()
@@ -83,9 +83,11 @@ async fn worker_shutdown_joins_within_five_seconds() -> Result<(), Error> {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    tokio::time::timeout(Duration::from_secs(5), workers.shutdown())
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let shutdown_result = tokio::time::timeout(Duration::from_secs(2), workers.shutdown())
         .await
-        .map_err(|e| Error::Shutdown(Box::new(e)))??;
+        .map_err(|e| Error::Shutdown(Box::new(e)))?;
+    assert!(shutdown_result.is_ok(), "shutdown failed: {shutdown_result:?}");
     Ok(())
 }
 

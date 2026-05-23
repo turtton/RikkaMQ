@@ -8,15 +8,20 @@ A handler can return `Ok(())`, `Err(ErrorOperation::Delay(_))`, or
 `Err(ErrorOperation::Fail(_))`.
 
 - `Ok(())` acknowledges the message.
-- `Delay` moves the message to the delayed hash and acknowledges it from the
-  active stream. The handler runs at most `max_retry + 1` times in total (one
-  initial attempt plus up to `max_retry` re-deliveries). Once that budget is
-  exceeded the message is moved to the failed hash.
+- `Delay` records the message in the delayed hash and leaves it pending until
+  its retry policy makes it eligible. The handler runs at most `max_retry + 1`
+  times in total (one initial attempt plus up to `max_retry` re-deliveries).
+  Once that budget is exceeded the message is moved to the failed hash.
 - `Fail` skips the retry budget and sends the message to the failed hash
   immediately.
 
 Delayed and failed messages stay in their respective hashes until they are
 removed manually or moved back to the queue.
+
+Retries are driven by the Redis Streams PEL (XPENDING + XCLAIM with
+MIN-IDLE-TIME). The configured `RetryPolicy` determines per-attempt idle
+threshold; workers may observe a slightly larger effective delay under load.
+`min_delay()` is used only as a coarse server-side prefilter.
 
 ### Redis implementation
 
@@ -192,6 +197,17 @@ opens one independent connection from `redis_url` for `XREAD BLOCK`. `pool` and
 `redis_url` must point to the same Redis deployment/database. This explicit URL
 keeps blocking reads out of the deadpool pool, so enqueue and maintenance
 operations do not starve when the worker count matches the pool size.
+
+## Examples
+
+Runnable Redis examples live under `examples/` and start `redis:7-alpine` with
+testcontainers, so a local Docker daemon is required.
+
+- `basic`: enqueue, handler ack, queue depth polling, and graceful shutdown.
+- `inspector`: failed-message paging with `Cursor` and `ErroredInfo`.
+- `retry`: exponential retry backoff plus `retry_failed` replay.
+
+Run one with `cargo run --example basic --features examples`.
 
 # Development notes
 

@@ -103,7 +103,7 @@ async fn failed_len_and_get_failed_round_trip() -> TestResult {
 #[tokio::test(flavor = "multi_thread")]
 async fn delayed_len_and_get_delayed_round_trip() -> TestResult {
     let setup = setup(MQConfig {
-        retry_policy: RetryPolicy::Fixed(Duration::from_millis(50)),
+        retry_policy: RetryPolicy::Fixed(Duration::from_secs(60)),
         max_retry: 5,
         ..MQConfig::default()
     })
@@ -122,20 +122,19 @@ async fn delayed_len_and_get_delayed_round_trip() -> TestResult {
         )
         .await?;
 
-    wait_for("delayed_len to reach at least one", Duration::from_secs(10), || async {
-        Ok((mq.delayed_len().await? >= 1).then_some(()))
+    wait_for("delayed_len to reach all entries", Duration::from_secs(4), || async {
+        Ok((mq.delayed_len().await? == 2).then_some(()))
     })
     .await?;
-    assert!(mq.delayed_len().await? >= 1);
-    let mut delayed_count = 0;
     for id in &ids {
-        if let Some(delayed) = mq.get_delayed(id).await? {
-            assert_eq!(delayed.id(), id);
-            assert_eq!(delayed.data(), &payload_for(*id));
-            delayed_count += 1;
-        }
+        let delayed = mq
+            .get_delayed(id)
+            .await?
+            .ok_or_else(|| Error::Backend(Box::new(std::io::Error::other("missing delayed entry"))))?;
+        assert_eq!(delayed.id(), id);
+        assert_eq!(delayed.data(), &payload_for(*id));
     }
-    assert!(delayed_count >= 1, "expected at least one delayed entry");
+    assert_eq!(mq.delayed_len().await?, 2);
 
     tokio::time::timeout(Duration::from_secs(2), workers.shutdown())
         .await
@@ -185,7 +184,7 @@ async fn scan_failed_walks_full_set_with_cursor() -> TestResult {
 async fn scan_delayed_walks_full_set_with_cursor() -> TestResult {
     let setup = setup(MQConfig {
         worker_count: NonZeroUsize::new(1).expect("test worker_count is non-zero"),
-        retry_policy: RetryPolicy::Fixed(Duration::ZERO),
+        retry_policy: RetryPolicy::Fixed(Duration::from_secs(60)),
         max_retry: 50,
     })
     .await?;
@@ -216,6 +215,7 @@ async fn scan_delayed_walks_full_set_with_cursor() -> TestResult {
     }
 
     assert_queue_ids(collected, &expected);
+    assert_eq!(mq.delayed_len().await?, 15);
     tokio::time::timeout(Duration::from_secs(2), workers.shutdown())
         .await
         .map_err(|e| Error::Shutdown(Box::new(e)))??;

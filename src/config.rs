@@ -15,7 +15,9 @@ pub enum RetryPolicy {
 }
 
 impl RetryPolicy {
-    /// Lower bound on retry interval. Used as the XPENDING IDLE threshold.
+    /// Lower-bound prefilter for the server-side XPENDING IDLE query;
+    /// per-message eligibility is enforced client-side using
+    /// [`RetryPolicy::delay_for`] with the message's delivery count.
     pub fn min_delay(&self) -> Duration {
         match self {
             Self::Fixed(delay) => *delay,
@@ -90,8 +92,8 @@ pub struct MQConfig {
     ///
     /// [`RetryPolicy::Fixed`] preserves a constant delay. [`RetryPolicy::Exponential`]
     /// grows from `initial` by `factor` up to `max`. [`RetryPolicy::min_delay`]
-    /// is used as the Redis XPENDING IDLE threshold before a pending message may
-    /// be claimed for retry.
+    /// is used only as a coarse Redis XPENDING IDLE prefilter before
+    /// per-message retry eligibility is checked.
     pub retry_policy: RetryPolicy,
 }
 
