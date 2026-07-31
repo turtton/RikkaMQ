@@ -46,7 +46,7 @@ tokio = { version = "1.0.1", features = ["macros", "rt-multi-thread", "sync", "t
 rand = "0.10.0"
 uuid = { version = "1.8.0", features = ["v4", "serde"] }
 dotenvy = "0.15.7"
-test-with = { version = "0.16.0", default-features = false, features = [] }
+test-with = { version = "0.17.0", default-features = false, features = [] }
 testcontainers = "0.23.1"
 testcontainers-modules = "0.11.6"
 
