@@ -1737,23 +1737,23 @@ dependencies = [
 
 [[package]]
 name = "test-with"
-version = "0.16.4"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e01f5d2f06061c078f7c5f3a3175fccb570c31f09439c41a41020584a8c578d9"
+checksum = "577e034de553ad1a2f3a62c711080f5095afb875da2e482646c7ad89e3c88428"
 dependencies = [
  "test-with-derive",
 ]
 
 [[package]]
 name = "test-with-derive"
-version = "0.16.4"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85eff264ce57c3e33649f0342270e3ac96467b2a8c0b70b380b8c84764918f0f"
+checksum = "c7b0d3f97e986691b2c1c63d6f3de480f203eac42e51eb0bbb7e98abb897b06d"
 dependencies = [
  "proc-macro2",
  "quote",
  "regex",
- "syn 2.0.115",
+ "syn 3.0.3",
 ]
 
 [[package]]
